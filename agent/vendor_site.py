@@ -32,7 +32,7 @@ SIGNALS = {
     "ownership claim": r"a [^.!?]{2,45} company\b|formerly|previously known as|acquired by|part of the .{2,40} group|ehemals|übernommen",
     "lifecycle notice": r"discontinued|end.of.life|end of support|no longer maintained|sunset|maintenance mode|eingestellt|nicht mehr weiterentwickelt|(?:das|zum) letzte[nm] jahr|entwicklung endet|fin de (?:vie|support)|fin (?:de vida útil|del soporte)|fine del supporto",
     "purchase transition": r"(?:(?:recommend|encourage|advis\w+)\b.{0,35}\b(?:migration|migrat\w+)|migrate from\b|migrating from\b|migrate (?:now )?to\b|not available for (?:new )?purchase|no longer (?:available|offered) for (?:new )?customers|formerly (?:marketed as|called|known as)|licen[cs](?:e|ing) changes)",
-    "legal entity": r"(?:[\w&.-]+\s+){1,4}(?:GmbH|UG|Ltd\.?|Inc\.?|LLC|GmbH & Co\. KG|SAS|AG)\b|Handelsregister|HRB \d+",
+    "legal entity": r"(?:[\w&.-]+\s+){1,4}(?-i:GmbH|UG|Ltd\.?|Limited|Inc\.?|LLC|Corporation|Corp\.|PLC|plc|GmbH & Co\. KG|KG|SAS|SARL|S\.A\.|S\.r\.l\.|B\.V\.|N\.V\.|Pty|AG|e\.V\.)(?!\w)|Handelsregister|HRB \d+|Registered in England|Company (?:No|number)\.? ?\d+",
 }
 RELEASE_DATE = re.compile(r"\b(?:20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}\.\d{1,2}\.20\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? 20\d{2})\b", re.I)
 ADOPTION_NUMBER = re.compile(r"\b(\d[\d,.]*)\s*(k|m|b|millions?|billions?)?\s*\+?\s+(users|customers|churches|clients|downloads|people)\b", re.I)
@@ -389,4 +389,11 @@ def collect_site(http, url, screenshot=True):
     if pages and not any(item.kind == "legal entity" for item in out.evidence):
         imprint = " No imprint or legal/contact link was identified in the sample." if "imprint" not in candidates else ""
         out.notes.append(LEGAL_COVERAGE_NOTE + "; verify the contracting entity separately." + imprint)
+        checked = [url for url, _ in pages.values()] + [
+            visited[target].url for target, _, _ in candidates.values() if visited.get(target)]
+        checked = list(dict.fromkeys(checked))
+        source = next((candidates[kind][0] for kind in ("imprint", "about") if kind in candidates), checked[0])
+        emit(out, "legal entity gap",
+             "No company name with a legal form, register entry or imprint was found on the sampled vendor pages: "
+             + ", ".join(checked[:5]) + "." + imprint, source)
     return out

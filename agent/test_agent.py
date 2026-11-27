@@ -15,7 +15,7 @@ from agent import COLUMNS, identity_hint, normalize, run_vendor, write_results
 from batch import bounded_vendor
 from customers import inspect_customer
 from evidence import Collection, Evidence, Http, Response, public_url
-from judge import coverage_guard, documented_blocker, judge, model_request, pending_only, provider_for, purchase_caution, validate, verify_claims, vote_verdict
+from judge import coverage_guard, documented_blocker, hollow_guard, judge, model_request, pending_only, provider_for, purchase_caution, validate, verify_claims, vote_verdict
 from research import ARCHIVE, archive, collect_search, company_profile_size, corroborate_records
 from vendor_site import LEGAL_COVERAGE_NOTE, ROBOTS_NOTE, classify_product, collect_site, extract, inspect_privacy_document, published_aliases
 
@@ -290,6 +290,19 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(result["reasons"][0]["source_date"], "2025-02-01")
 
     @patch("judge.model_request")
+    def test_claim_check_retains_decisive_label_with_narrower_same_color_quote(self, request):
+        source = "https://example.org/support"
+        quote = "Support for Widget ended on 2026-01-01."
+        request.return_value = {"checks": [{"id": 1, "status": "partial", "quote": quote}]}
+        verdict = {"overall": "Red", "confidence": 0.9, "reasons": [
+            {"severity": "Red", "claim": "Support for Widget and Widget Pro ended.", "source_url": source},
+        ]}
+        result = verify_claims(verdict, [Evidence("lifecycle notice", quote, source)], "test-key", None)
+        self.assertEqual(result["overall"], "Red")
+        self.assertEqual(result["reasons"][0]["claim"], f"Source reports: “{quote}”")
+        self.assertLess(result["confidence"], 0.9)
+
+    @patch("judge.model_request")
     def test_linkedin_profile_alone_does_not_validate_adoption(self, request):
         source = "https://www.linkedin.com/company/example/"
         claim = "The vendor reports 100 customers."
@@ -443,6 +456,25 @@ class AgentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             normalize("file:///etc/passwd")
         self.assertFalse(public_url("http://127.0.0.1/"))
+
+
+class HollowGuardTests(unittest.TestCase):
+    def verdict(self, source):
+        return {"overall": "Red", "confidence": 0.8, "reasoning": "",
+                "reasons": [{"severity": "Red", "claim": "No legal entity.", "source_url": source}]}
+
+    def test_entity_gap_alone_is_not_red(self):
+        source = "https://example.org/about"
+        collection = Collection([Evidence("legal entity gap", "No company name found.", source)])
+        result = hollow_guard(self.verdict(source), collection)
+        self.assertEqual(result["overall"], "Yellow")
+        self.assertEqual(result["reasons"][0]["severity"], "Yellow")
+
+    def test_entity_gap_with_traction_claim_stays_red(self):
+        source = "https://example.org/about"
+        collection = Collection([Evidence("legal entity gap", "No company name found.", source),
+                                 Evidence("traction claim", "Page text: “57M+ users”", "https://example.org/")])
+        self.assertEqual(hollow_guard(self.verdict(source), collection)["overall"], "Red")
 
 
 if __name__ == "__main__":

@@ -25,8 +25,11 @@ See [README.md](README.md) for API configuration and [RESULTS.md](RESULTS.md) fo
 | --- | ---: | ---: | ---: | ---: |
 | Locked (`6297199`) | 27/40 (67.5%) | 0 / 0 | 0 new, 375 hits | $0.16 |
 | Updated (`f5549f7`) | 27/40 (67.5%) | 0 / 0 | 9 new, 366 hits | $0.063 |
+| Laptop pipeline with fixes 1–3 | 29/40 (72.5%) | 0 / 0 | Basic search; count not reported for this run | Not reported |
 
-Both used `openai/gpt-oss-120b`. The warm caches and different cache hit rates affect the cost comparison. Always predicting Yellow gets 16/40 (40%). The sample is small (roughly ±15 percentage points near these scores), and these same rows informed the rubric. This is not a blind-accuracy estimate.
+All used `openai/gpt-oss-120b`. The warm caches and different cache hit rates affect the cost comparison. Always predicting Yellow gets 16/40 (40%). The sample is small (roughly ±15 percentage points near these scores), and these same rows informed the rubric. This is not a blind-accuracy estimate.
+
+The laptop handoff adds broader contracting-entity detection and cited coverage gaps, a rubric and guard that distinguish missing legal information from unsubstantiated commercial social proof, and retention of a decisive label when the verifier keeps a narrowed same-color quote. Its scores came from the user's laptop log, not a new evaluation here. That log also reports **29/40 for Haiku 5.5** (zero Red ↔ Green, about $0.30 and zero new Tavily credits) and **31/40** for a post-hoc merge of saved GPT-OSS and Haiku outputs. Opus deep research scored **12/26 vs. the pipeline's 20/26** on the same completed rows, with one Red → Green. The pipeline alone is the live path; deep research is optional and writes separate files. See [RESULTS.md](RESULTS.md#laptop-handoff) for the comparison.
 
 ### Judge-only comparison
 

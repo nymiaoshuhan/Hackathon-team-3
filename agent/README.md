@@ -21,6 +21,16 @@ python agent.py --blind --input blind.txt --out verdicts.csv --audit-out verdict
 
 `--blind` defaults to `blind.txt` and `verdicts.csv`. Batch runs isolate each vendor with a 150-second deadline (`--timeout` to change it). Invalid URLs, failed workers, and timeouts produce low-confidence Yellow rows with an insufficient-evidence explanation. If collection had already checkpointed a source, an interrupted row retains a cited finding rather than losing all the work. `--audit-out` writes the same run's JSON (including per-vendor timings) without researching twice.
 
+### Live submission
+
+Run from `agent/` with `LLM_MODEL=openai/gpt-oss-120b` and the Nebius and Tavily keys in your environment or ignored local `.env`. Put the organizers' URLs in `live_urls.txt`.
+
+```bash
+python agent.py --blind --input live_urls.txt --out verdicts.csv --audit-out verdicts.json --workers 5 --no-screenshot
+```
+
+On Windows, `./run_live.ps1 -Urls live_urls.txt` runs the same pipeline and writes `live_out/verdicts.csv` and `live_out/verdicts.json`. Submit the pipeline CSV. `-DeepResearch` is an opt-in experiment, not the submission path; its files are named `deep_experiment.*` and never replace the pipeline files. Standalone `python deep_agent.py --help` describes the optional backends: an authenticated Claude Code CLI by default, or a separately installed `anthropic` Python package and key for `--backend api`.
+
 Keys are optional. Export them or put them in a local, ignored `.env` file:
 
 | Variable | Purpose |
@@ -28,6 +38,7 @@ Keys are optional. Export them or put them in a local, ignored `.env` file:
 | `TAVILY_API_KEY` | Adds independent web search. Without it, coverage is mostly first-party pages and domain history. |
 | `LLM_API_KEY` | Enables the model judge. Without it, the conservative deterministic judge runs. |
 | `LLM_PROVIDER` | Optional explicit override: `openai`, `anthropic`, or `nebius`. Otherwise inferred from the key prefix. |
+| `LLM_EFFORT` | Anthropic effort setting, default `low`; does not change Nebius requests. |
 | `LLM_MODEL` | Defaults: `gpt-4o-mini`, `claude-haiku-4-5`, or `openai/gpt-oss-120b`, respectively. |
 | `LLM_BASE_URL` | Optional provider endpoint override; Nebius defaults to `https://api.tokenfactory.nebius.com/v1`. |
 | `LLM_VISION` | Set to `1` and select a vision-capable model to include the homepage screenshot in the model call. |

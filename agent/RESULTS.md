@@ -70,6 +70,19 @@ Two code experiments also did not justify a live change. Appending localized and
 
 All five domains were outside the labeled CSV. The batch finished in **7.48 s** with a warm search cache, no crashed or timed-out rows, and matching CSV and JSON verdicts. This tests batch behavior, not prediction accuracy; no independent blind labels were collected. All 11 distinct final citations returned HTTP 200 in the spot-check. Three supporting excerpts were not found verbatim in the fetched HTML (SQLite's YouTube citation, one Bruno excerpt, and the LastPass blog post); those links are not fully substantiated by this check. In particular, the SQLite professional-support claim still needs a direct source. A 200 response and an excerpt-based pass are not proof that a human can verify each claim on the page.
 
+## Laptop handoff
+
+These results are from the user's laptop transcript, not rerun in this environment:
+
+| Run | Correct | Green recall | Red recall | Red → Green / Green → Red |
+| --- | ---: | ---: | ---: | ---: |
+| GPT-OSS 120B, fixes 1–3, basic Tavily | 29/40 (72.5%) | 9/14 | 7/10 | 0 / 0 |
+| Haiku 5.5, same pipeline | 29/40 (72.5%) | 6/14 | 7/10 | 0 / 0 |
+
+All 16 Yellow rows were correct with Haiku versus 13 with GPT-OSS. Haiku's run reported about **$0.30** of model usage and no new Tavily credits. A merge rule selected after comparing the two saved runs reached **31/40**, but was not tested on blind products. A separate advanced-search GPT-OSS run dropped to **21/40**, so basic search remains the default. Opus deep research reported **12/26** on the same completed rows where the pipeline got **20/26**, including one Red → Green for deep research. This is a partial comparison, not a completed 40-row deep benchmark. Use the pipeline-only command in [README.md](README.md#live-submission) for submission.
+
+The imported pipeline was smoke-tested on the same five example URLs: 5 matching CSV and JSON rows, all in model mode, in **9.52 s**. Tavily reused 47 cached responses with **0 new credits**. Nebius used 20 calls, 141,144 input tokens, and 14,364 output tokens (about **$0.03** at list price). This smoke run checks execution and output parity, not verdict accuracy; the earlier checked-in example outputs were not overwritten.
+
 ## Cost and reproduction
 
 - **Locked, 40 rows:** 0 new Tavily credits (375 cache hits); 120 new Nebius requests (40 cached), 761,124 input and 76,824 output tokens, approximately **$0.16** at list pricing.

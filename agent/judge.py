@@ -63,6 +63,13 @@ evidence. For governance, look for a concrete defect in the artifacts presented
 to buyers, not just a missing certificate or a thin vendor footprint.
 Red must articulate the exact material blocker. A pending allegation alone
 should usually be Yellow; distinguish it from a confirmed underlying practice.
+Hollow commercial vendor is Red: no identifiable contracting party (a
+"legal entity gap" item, no named company or team) combined with headline
+traction, customer-logo or investor claims that no independent source confirms,
+or a logo wall made mostly of partner/program/store/certification badges, or
+investor/funding logos that belong to someone else. A buyer cannot know who
+signs the contract or whether the social proof is real. This does not apply to
+well-known vendors or open-source projects that independent sources identify.
 
 A copyright year is not a release date. A new domain is not company age. Logos,
 ISO/SOC statements, and numbers on vendor sites are self-reports; validate them
@@ -72,7 +79,8 @@ and final action. Check date, product relevance, and mitigation; don't count the
 same story twice or claim a hidden incident from a failed search. Reviews,
 search snippets, and screenshots are leads, not definitive proof. Never infer
 AI-generated artwork from appearance alone. Incomplete searches, unavailable
-pages or merely missing evidence are not findings against a vendor. Prefer a
+pages or merely missing evidence are not findings against a vendor (except the
+hollow-vendor combination above). Prefer a
 low-confidence Yellow when the evidence is genuinely insufficient. If evidence
 conflicts, explain exactly what remains uncertain. Avoid false confidence.
 
@@ -144,6 +152,8 @@ def model_request(key, user, screenshot, http=None, *, system=RUBRIC, sample=0):
     if screenshot and os.getenv("LLM_VISION", "").lower() in {"1", "true", "yes"}:
         image = base64.b64encode(screenshot.read_bytes()).decode("ascii")
     generation = {"temperature": 0.2} if provider == "nebius" else {}
+    if provider == "anthropic":
+        generation = {"max_tokens": 12000, "output_config": {"effort": os.getenv("LLM_EFFORT", "low")}}
     cache_key = json.dumps([provider, base, model, generation, system, user,
                             hashlib.sha256(image.encode()).hexdigest() if image else None] + ([sample] if sample else []))
     if http:
@@ -160,9 +170,9 @@ def model_request(key, user, screenshot, http=None, *, system=RUBRIC, sample=0):
         response = requests.post(
             f"{base}/messages",
             headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
-            json={"model": model, "system": system, "max_tokens": 1800,
+            json={"model": model, "system": system, **generation,
                   "messages": [{"role": "user", "content": content}]},
-            timeout=(5, 55),
+            timeout=(5, 90),
         )
         response.raise_for_status()
         packet = response.json()
@@ -469,7 +479,7 @@ def verify_claims(verdict, evidence, key, http):
     incomplete = any(row["status"] != "yes" or "discard_reason" in row for row in audit)
     verdict.update(reasons=kept, claim_verification=audit)
     if verdict["overall"] != "Yellow" and not any(
-        row["severity"] == verdict["overall"] and row["verification"] == "yes" for row in kept
+        row["severity"] == verdict["overall"] and row["verification"] in ("yes", "partial") for row in kept
     ):
         verdict.update(overall="Yellow", confidence=min(0.50, verdict["confidence"]))
     if incomplete:
@@ -553,12 +563,32 @@ def judge(url, collection, excluded_row=None, http=None, *, product_type="softwa
                 if caution:
                     existing = [r for r in verdict["reasons"] if r["severity"] == "Yellow" and r not in caution]
                     verdict["reasons"] = (caution + existing)[:3] + [r for r in verdict["reasons"] if r["severity"] != "Yellow"]
+            verdict = hollow_guard(verdict, collection)
             return coverage_guard(verify_claims(verdict, collection.evidence, key, http), collection), "llm", ""
         except MODEL_ERRORS as error:
             code = error.response.status_code if isinstance(error, requests.HTTPError) and error.response is not None else type(error).__name__
             return coverage_guard(rules(url, collection), collection), "rules", f"LLM verdict unavailable ({code}); used conservative local rules."
     note = "No evidence gathered; used conservative local rules." if not collection.evidence else "LLM_API_KEY not set; used conservative local rules."
     return coverage_guard(rules(url, collection), collection), "rules", note
+
+
+HOLLOW_SIGNALS = {"traction claim", "reported adoption count", "different adoption counts",
+                  "customer role ambiguity", "logo presentation"}
+
+
+def hollow_guard(verdict, collection):
+    """A missing legal entity is Red only alongside self-reported traction or customer-logo claims."""
+    gaps = {item.source_url for item in collection.evidence if item.kind == "legal entity gap"}
+    if verdict["overall"] != "Red" or not gaps or any(item.kind in HOLLOW_SIGNALS for item in collection.evidence):
+        return verdict
+    reasons = [dict(reason, severity="Yellow") if reason["severity"] == "Red" and reason["source_url"] in gaps
+               else reason for reason in verdict["reasons"]]
+    verdict["reasons"] = reasons
+    if not any(reason["severity"] == "Red" for reason in reasons):
+        verdict.update(overall="Yellow", confidence=min(0.6, verdict["confidence"]),
+                       reasoning="No contracting entity was found on the sampled pages, but the site makes no "
+                                 "unconfirmed traction or customer claims. Verify the legal entity before purchase.")
+    return verdict
 
 
 def coverage_guard(verdict, collection):
