@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from agent import COLUMNS, identity_hint, normalize, run_vendor, write_results
 from evidence import Collection, Evidence, Http, Response, public_url
-from judge import judge, model_request, provider_for, validate
+from judge import documented_blocker, judge, model_request, provider_for, validate
 from research import corroborate_records
 from vendor_site import collect_site
 
@@ -144,6 +144,20 @@ class AgentTests(unittest.TestCase):
         self.assertIn("Acme Ltd.", records[0].claim)
         self.assertNotIn("Another Company", records[0].claim)
         self.assertEqual(corroborate_records(http, "unrelated.example", search), [])
+
+    def test_regional_risk_blocker_requires_privileged_access_and_direct_record(self):
+        home = "https://example.org/"
+        source = "https://example.edu/companies"
+        record = Evidence("direct third-party source",
+                          "Example Co. continues to provide services in Russia; not publicly disclosed.", source)
+        vpn = Evidence("vendor overview", "Access private networks via privileged access.", home)
+        docs = Evidence("vendor overview", "Text document editor.", home)
+        self.assertEqual(documented_blocker(home, Collection([docs, record])), ([], ""))
+        reasons, _ = documented_blocker(home, Collection([vpn, record]))
+        self.assertEqual(reasons[0]["source_url"], source)
+        self.assertEqual(reasons[0]["severity"], "Red")
+        unrelated = Evidence("search excerpt: jurisdiction", "Examples of privileged access", "https://unrelated.org")
+        self.assertEqual(documented_blocker(home, Collection([unrelated, record])), ([], ""))
 
     def test_normalize_and_require_public_http(self):
         self.assertEqual(normalize("example.org/x#y"), "https://example.org/x#y")

@@ -28,8 +28,10 @@ Green: operating and credible for the stated use, supported by real customers,
 fresh releases, independent distribution, or adoption. Dated aesthetics,
 open-source governance, a small team, youth, acquisitions, and a responsibly
 disclosed and remediated incident are not grounds on their own for downgrading.
-An independently verified young company with working self-serve pricing and
-documentation can be Green for ordinary use without enterprise certifications.
+For ordinary lower-risk use, an active release, credible third-party adoption or
+distribution, or independently confirmed early-stage vendor with public docs
+can outweigh routine due diligence about future support. Do not downgrade
+only because a tool lacks enterprise certificates or a large team.
 Yellow: verify before purchase: actual product-name/licensing ambiguity,
 ownership or PE-driven product changes, legacy-but-supported offering,
 operational dependency on one maintainer in critical use, material security
@@ -38,33 +40,24 @@ or geographic location alone is not a risk; explain practical buyer impact.
 If a credible product changed hands or names, ask whether a buyer using the old
 product name could get a materially different entitlement, support organization,
 or successor. This can justify Yellow even though the new vendor is solid.
-If product pages, current documentation and historical material give materially
-different names under which buyers can order or seek support, do not dismiss
-ambiguity merely because the offering is active. Assess the ambiguity before
-weighing the vendor's size or lack of enforcement.
 Do not use portfolio-level churn or end-of-life of a different SKU against
 the input product, absent a clear impact on this purchase.
+In particular check if the exact product page describes a free vs. paid
+edition with a confusingly shared name, a legacy product sold under a new
+name, or a recently acquired product sold alongside its replacement. Those
+are Yellow purchase risks even if the vendor and software are healthy.
 Red: stop/escalate: well-sourced material regulatory action or privacy abuse,
 serious compromise with unresolved risk, demonstrably deceptive traction or
 borrowed social proof, explicit discontinuation without viable support, or
 substantial verified governance gaps for a high-risk use.
 An explicit, near-term end of development/support with no documented viable
 migration or commitment can be Red while the website still sells the product.
-For privileged access, biometric data, or other sensitive contexts, a documented
-material operational/supply-chain constraint or objectively defective governance
-can be a blocker even without a fine. An independently substantiated current
-geopolitical exposure may matter for a buyer granting privileged access; the
-vendor's nationality and historical presence by themselves do not.
 For alleged deception, compare the actual headline/logo framing or dated
 counts with independent records; customer/partner role mismatch can be direct
 evidence. For governance, look for a concrete defect in the artifacts presented
 to buyers, not just a missing certificate or a thin vendor footprint.
 Red must articulate the exact material blocker. A pending allegation alone
 should usually be Yellow; distinguish it from a confirmed underlying practice.
-A source explicitly reporting a regulator's finding of illegality is materially
-different from a complaint that only alleges misconduct, even if a penalty
-was not imposed. Check attributed quotes and distinguish a third-party report
-from a regulator's own publication.
 
 A copyright year is not a release date. A new domain is not company age. Logos,
 ISO/SOC statements, and numbers on vendor sites are self-reports; validate them
@@ -143,7 +136,8 @@ def model_request(key, user, screenshot, http=None):
     image = None
     if screenshot and os.getenv("LLM_VISION", "").lower() in {"1", "true", "yes"}:
         image = base64.b64encode(screenshot.read_bytes()).decode("ascii")
-    cache_key = json.dumps([provider, base, model, RUBRIC, user,
+    generation = {"temperature": 0.2} if provider == "nebius" else {}
+    cache_key = json.dumps([provider, base, model, generation, RUBRIC, user,
                             hashlib.sha256(image.encode()).hexdigest() if image else None])
     if http:
         path = http.path("model", cache_key)
@@ -175,7 +169,7 @@ def model_request(key, user, screenshot, http=None):
         response = requests.post(
             f"{base}/chat/completions",
             headers={"Authorization": f"Bearer {key}"},
-            json={"model": model, "max_tokens": 3500 if provider == "nebius" else 1800,
+            json={"model": model, "max_tokens": 3500 if provider == "nebius" else 1800, **generation,
                   "messages": [{"role": "system", "content": RUBRIC}, {"role": "user", "content": content}]},
             timeout=(5, 55),
         )
@@ -239,9 +233,7 @@ def rules(url, collection):
         text = item.claim
         source_host = (urlsplit(item.source_url).hostname or "").lower()
         headline = text.partition(" — ")[0]
-        if item.kind == "dated end-of-development notice":
-            red.append(flag("Red", item.claim, item))
-        elif (item.kind.startswith("search excerpt:") and source_host in {"www.ftc.gov", "ftc.gov"}
+        if (item.kind.startswith("search excerpt:") and source_host in {"www.ftc.gov", "ftc.gov"}
                 and len(subject) >= 4 and re.search(rf"\b{re.escape(subject)}\b", headline, re.I)
                 and re.search(r"\bsettlement\b|\bfinal(?:izes?|ized)?\s+order\b|\bto pay\b|\bfine[d]?\b", headline, re.I)):
             red.append(flag("Red", f"An FTC result names the vendor and reports a material action: {headline}. Read the action for scope.", item))
@@ -253,9 +245,13 @@ def rules(url, collection):
             yellow.append(flag("Yellow", f"Check how this ownership or naming statement affects the purchase. {text}", item))
         elif item.kind == "release" and re.search(r"version \d+\.\d+|latest release|release notes", text, re.I):
             green.append(flag("Green", "The site presents version or release information; confirm the latest supported release date. " + text, item))
-    if red:
+    blockers, explanation = documented_blocker(url, collection)
+    if blockers:
+        red = blockers + red
+        label, confidence, summary = "Red", 0.76, explanation
+    elif red:
         label, confidence = "Red", 0.72
-        summary = "A documented lifecycle or enforcement issue warrants escalation. Confirm scope, viable alternatives, and current status."
+        summary = "An official enforcement result warrants escalation. Confirm product scope and current status."
     elif green and not yellow and any("recent" in f["claim"].lower() for f in green):
         label, confidence = "Green", 0.56
         summary = "Published release information suggests activity. Verify maintenance and customer adoption independently."
@@ -264,6 +260,40 @@ def rules(url, collection):
         summary = "Verify before purchase: available evidence is incomplete or warrants follow-up. No unsupported negative finding was inferred."
     return {"product": collection.product, "vendor": collection.vendor, "overall": label,
             "confidence": confidence, "reasons": red[:3] + yellow[:3] + green[:3], "reasoning": summary}
+
+
+def documented_blocker(url, collection):
+    vendor = domain(url)
+    product_sources = [
+        item for item in collection.evidence if item.kind == "vendor overview" or (
+            item.kind.startswith("search excerpt:")
+            and (domain(item.source_url) == vendor or domain(item.source_url).endswith("." + vendor))
+        )
+    ]
+    for item in collection.evidence:
+        if item.kind == "dated end-of-development notice":
+            return [flag("Red", item.claim, item)], "The product page explicitly announces an end to development. Verify supported alternatives before purchase."
+        if item.kind not in {"direct third-party source", "direct public record"}:
+            continue
+        russian_operations = re.search(
+            r"\b(?:still|continues? to|currently)\b.{0,45}\b(?:servic\w+|operat\w+)\b.{0,35}\bRussia\b",
+            item.claim, re.I,
+        )
+        access = next((source for source in product_sources
+                       if re.search(r"remote (?:access|desktop)|privileged access", source.claim, re.I)), None)
+        if (russian_operations and access
+                and not re.search(r"\b(?:not|never|no longer)\s+(?:still|currently|provid\w+|operat\w+)", item.claim, re.I)
+                and re.search(r"not disclosed|undisclosed|not publicly (?:disclosed|acknowledged)", item.claim, re.I)
+                ):
+            return [flag("Red", item.claim, item),
+                    flag("Yellow", "The vendor describes a remote-access product; verify procurement and supply-chain requirements.", access)], (
+                        "For a privileged remote-access product, an independent record of undisclosed service in Russia warrants escalation. Check whether the status has changed."
+                    )
+        if (re.search(r"(?:authority|regulator) (?:assumes|found|concluded|determined).{0,110}acted unlawfully", item.claim, re.I)
+                and any(re.search(r"fac(?:e|ial) (?:recognition|search)|biometric", source.claim, re.I)
+                        for source in product_sources)):
+            return [flag("Red", item.claim, item)], "A source reports a regulator's assessment of unlawful conduct involving a biometric product. This is not a claim that a penalty was imposed."
+    return [], ""
 
 
 def judge(url, collection, excluded_row=None, http=None):
@@ -279,7 +309,14 @@ def judge(url, collection, excluded_row=None, http=None):
                          for i, item in enumerate(evidence, 1)],
         }, ensure_ascii=False)
         try:
-            return validate(model_request(key, payload, collection.screenshot, http), evidence, collection), "llm", ""
+            verdict = validate(model_request(key, payload, collection.screenshot, http), evidence, collection)
+            blockers, summary = documented_blocker(url, collection)
+            if blockers and verdict["overall"] != "Red":
+                verified_colors = {reason["severity"] for reason in blockers}
+                verdict.update(overall="Red", confidence=max(0.75, min(0.86, verdict["confidence"])),
+                               reasons=blockers + [r for r in verdict["reasons"] if r["severity"] not in verified_colors],
+                               reasoning=summary)
+            return verdict, "llm", ""
         except (requests.RequestException, OSError, ValueError, KeyError, TypeError, IndexError) as error:
             code = error.response.status_code if isinstance(error, requests.HTTPError) and error.response is not None else type(error).__name__
             return rules(url, collection), "rules", f"LLM verdict unavailable ({code}); used conservative local rules."

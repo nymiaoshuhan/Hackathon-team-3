@@ -168,9 +168,14 @@ def corroborate_records(http, name, items):
             for tag in scope.find_all(["tr", "p", "li", "h1"])
         ]
         matches = list(dict.fromkeys(block for block in blocks if pattern.search(block)))
-        matches.sort(key=lambda block: not bool(re.search(
-            r"\bunlawful\b|not disclosed|provid(?:es|ing) services|final order|consent order|\bsettlement\b|\bviolat(?:es|ion|ed)\b|to pay", block, re.I
-        )))
+        def relevance(block):
+            if re.search(r"(?:authority|regulator).{0,100}acted unlawfully", block, re.I):
+                return 0
+            if re.search(r"\bunlawful\b|not disclosed|provid(?:es|ing) services|final order|consent order|\bsettlement\b|\bviolat(?:es|ion|ed)\b|to pay", block, re.I):
+                return 1
+            return 2
+
+        matches.sort(key=relevance)
         for block in matches[:3]:
             label = "direct third-party source" if domain(page.url) in PUBLIC_RECORD_SOURCES - {"ftc.gov"} else "direct public record"
             result.append(Evidence(label, f'Page text: “{block}”', page.url))
