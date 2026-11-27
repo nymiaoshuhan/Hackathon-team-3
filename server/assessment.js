@@ -124,11 +124,11 @@ export function assess(inputUrl, raw) {
     clean(doc.text)).map(doc => [doc.id, doc]));
   const limitations = new Set((raw.limitations ?? []).map(clean).filter(Boolean));
   const used = new Map();
-  const context = { host: inputHost, productName, identitySources: [],
-    vendorDocs: [...documents.values()].filter(doc => site(hostOf(doc.url)) === site(inputHost)),
-    placeholder: [...documents.values()].some(doc => doc.origin === 'submitted' &&
-      hostOf(doc.url) === inputHost && placeholderNotice(clean(doc.text).slice(0, 900))) };
-  if (context.placeholder) limitations.add('The submitted page describes a placeholder or example domain. Its notice does not establish a SaaS product.');
+  const submittedPage = [...documents.values()].find(doc => doc.origin === 'submitted' && hostOf(doc.url) === inputHost);
+  const notice = clean(submittedPage?.text).slice(0, 900).split(/(?<=[.!?])\s+/u).find(placeholderNotice);
+  const context = { host: inputHost, productName, identitySources: [], placeholder: Boolean(notice),
+    vendorDocs: [...documents.values()].filter(doc => site(hostOf(doc.url)) === site(inputHost)) };
+  if (notice) limitations.add('The submitted page describes a placeholder or example domain. Its notice does not establish a SaaS product.');
   let materialQuote = '';
   const checks = criteria.map(criterion => {
     const proposal = (raw.checks ?? []).find(entry => entry.id === criterion.id);
@@ -149,6 +149,10 @@ export function assess(inputUrl, raw) {
     }
     const status = evidence.length && ['confirmed', 'contradicted'].includes(proposal?.status)
       ? proposal.status : 'unverified';
+    if (criterion.id === 'identity' && status === 'unverified' && notice) {
+      evidence.push({ sourceId: submittedPage.id, quote: notice });
+      used.set(submittedPage.id, { id: submittedPage.id, url: submittedPage.url, title: submittedPage.title || inputHost });
+    }
     const summary = status === 'confirmed' ? confirmedSummaries[criterion.id] :
       status === 'contradicted' ? 'The cited source conflicts with the claim under review.' :
       'Available evidence did not establish this check.';

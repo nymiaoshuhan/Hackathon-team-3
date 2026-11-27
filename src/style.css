@@ -125,3 +125,10 @@ blockquote { font-size: 14px }
   .score { text-align: left }
   .finding-body { margin-left: 0 }
 }
+@media (max-width: 360px) {
+  header { flex-wrap: wrap; gap: 13px }
+  .mode-switch { width: 100% }
+  .mode-switch button { flex: 1 }
+  h1 { font-size: 40px }
+  h1 br { display: none }
+}

@@ -137,6 +137,8 @@ test('a documentation-example notice cannot earn identity or product-documentati
   assert.equal(result.verdict, 'yellow');
   assert.equal(result.score, 0);
   assert.ok(result.limitations.some(value => value.includes('placeholder')));
+  assert.ok(result.checks[0].evidence.some(item => item.quote === notice));
+  assert.ok(result.sources.some(source => source.url === url));
 });
 
 test('generic navigation cannot establish a product or concrete documentation', () => {
