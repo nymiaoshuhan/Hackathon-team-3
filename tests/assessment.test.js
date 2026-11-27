@@ -127,3 +127,26 @@ test('unsupported model summaries are never rendered as facts', () => {
   assert.ok(!JSON.stringify(result).includes('government agency'));
   assert.ok(result.interpretation.includes(research.documents[1].text));
 });
+
+test('a documentation-example notice cannot earn identity or product-documentation points', () => {
+  const research = fixture('credible');
+  const notice = 'This domain is for use in documentation examples without needing permission.';
+  research.documents[0].text = notice;
+  research.checks[0].evidence[0].quote = notice;
+  const result = assess(url, research);
+  assert.equal(result.verdict, 'yellow');
+  assert.equal(result.score, 0);
+  assert.ok(result.limitations.some(value => value.includes('placeholder')));
+});
+
+test('generic navigation cannot establish a product or concrete documentation', () => {
+  const research = fixture('credible');
+  const navigation = 'Home About Us Documentation Learn more Sign in';
+  research.documents[0].text = navigation;
+  research.documents[2].text = navigation;
+  research.checks[0].evidence[0].quote = navigation;
+  research.checks[3].evidence[0].quote = navigation;
+  const result = assess(url, research);
+  assert.equal(result.checks[0].status, 'unverified');
+  assert.equal(result.checks[3].status, 'unverified');
+});

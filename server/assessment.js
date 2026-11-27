@@ -51,6 +51,22 @@ function tiesToHost(doc, quote, host, productName) {
       (clean(link.text).includes(quote) || quote.includes(clean(link.text))));
 }
 
+// A placeholder notice is evidence about this page's purpose. It cannot
+// establish a software product or documentation of that product.
+function placeholderNotice(text) {
+  return /\b(?:this (?:web ?site|page|domain) (?:name )?(?:is|is intended|exists|may be used) (?:only |solely )?(?:for (?:use in |use as |illustrative )?(?:documentation|examples?)|a placeholder)|(?:reserved|maintained) (?:solely )?for (?:documentation|illustrative (?:purposes|examples))|(?:domain|website) (?:is )?(?:parked|for sale))\b/i.test(text);
+}
+
+function identifiesProduct(quote, doc, productName) {
+  const name = productName.toLowerCase();
+  if (!name || ![quote, doc.title ?? ''].some(text => text.toLowerCase().includes(name))) return false;
+  return /\b(?:software|platform|service|tool|application|monitor(?:ing|s)?|manage(?:ment|s)?|track(?:ing|s)?|automate[sd]?|integrat(?:es?|ion)|analy(?:ses?|zes?|tics)|develop(?:er|ment)|hosted|teams?|workflow|workspace|sync(?:s|hronizes)?|collaborat(?:e|ion)|API|SDK|customers?|provides?|enables?|helps?|build|deploy|store|connect|capture|search|create|design|support|report|process|detect|debug)\b/i.test(quote);
+}
+
+function describesDocumentation(quote) {
+  return /\b(?:authentication|endpoint|pagination|parameter|SDK|API|release notes?|changelog|version \d|configuration|command|install(?:ation)?|invoke|POST|GET \/|fixed|added|deprecated|migrat(?:e|ion)|initialize|integration|webhook|configure|deploy(?:ment)?|credentials?|access token|permissions?)\b/i.test(quote);
+}
+
 function supports(proposal, item, doc, context) {
   const sourceHost = hostOf(doc.url);
   const quote = clean(item.quote);
@@ -63,6 +79,7 @@ function supports(proposal, item, doc, context) {
   if (proposal.status === 'contradicted') {
     return independent && tied;
   }
+  if (proposal.status === 'confirmed' && (context.placeholder || placeholderNotice(quote))) return false;
   if (proposal.id === 'independent') {
     const original = context.identitySources;
     const distinctPublisher = !original.length || original.some(first =>
@@ -71,7 +88,9 @@ function supports(proposal, item, doc, context) {
       context.vendorDocs.some(first => clean(first.text).includes(quote));
     return independent && tied && distinctPublisher && !copied;
   }
-  if (proposal.id === 'identity') return sourceHost === context.host || tied;
+  if (proposal.id === 'identity') return (sourceHost === context.host || tied) &&
+    identifiesProduct(quote, doc, context.productName);
+  if (proposal.id === 'substance') return (!separate || tied) && describesDocumentation(quote);
   return !separate || tied;
 }
 
@@ -106,7 +125,10 @@ export function assess(inputUrl, raw) {
   const limitations = new Set((raw.limitations ?? []).map(clean).filter(Boolean));
   const used = new Map();
   const context = { host: inputHost, productName, identitySources: [],
-    vendorDocs: [...documents.values()].filter(doc => site(hostOf(doc.url)) === site(inputHost)) };
+    vendorDocs: [...documents.values()].filter(doc => site(hostOf(doc.url)) === site(inputHost)),
+    placeholder: [...documents.values()].some(doc => doc.origin === 'submitted' &&
+      hostOf(doc.url) === inputHost && placeholderNotice(clean(doc.text).slice(0, 900))) };
+  if (context.placeholder) limitations.add('The submitted page describes a placeholder or example domain. Its notice does not establish a SaaS product.');
   let materialQuote = '';
   const checks = criteria.map(criterion => {
     const proposal = (raw.checks ?? []).find(entry => entry.id === criterion.id);

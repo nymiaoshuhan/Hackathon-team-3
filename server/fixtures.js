@@ -6,7 +6,7 @@ export function fixtureResearch(inputUrl, scenario) {
   if (!fixtureScenarios.includes(scenario)) throw new RangeError('Unknown fixture scenario');
   const input = new URL(inputUrl);
   const host = input.hostname;
-  const productName = 'Orbit Desk (fixture)';
+  const productName = 'Orbit Desk';
   const identity = 'Orbit Desk provides a hosted support queue for service teams.';
   const operator = 'Orbit Desk Labs Ltd operates this service. Contact our legal office at legal@orbit-desk.example.';
   const substance = 'The Orbit Desk API guide documents ticket creation, authentication, and pagination.';

@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import https from 'node:https';
+import { Runner } from '@openai/agents';
 import { fetchPublicText, lookupPublic, validatePublicUrl } from '../server/fetch.js';
-import { searchSources } from '../server/live.js';
+import { research, searchSources } from '../server/live.js';
 
 test('public URL checks exclude credentials, local names and non-public IP ranges', () => {
   for (const input of ['file:///local', 'http://user:pw@sample.org', 'http://localhost.',
@@ -55,4 +56,20 @@ test('model-written links cannot enter the search citation catalog', () => {
   assert.deepEqual(searchSources([{ providerData: { output: [search, message] } }]),
     { searched: true, urls: ['https://partner.org/guide', 'https://registry.org/'] });
   assert.deepEqual(searchSources([{ providerData: { output: [message] } }]), { searched: false, urls: [] });
+});
+
+test('a discovery timeout preserves a readable page as incomplete research without claims', async t => {
+  serveOnce(t, 200, { 'content-type': 'text/plain' }, 'A public project page.');
+  t.mock.method(Runner.prototype, 'run', async () => { throw new DOMException('Time limit', 'TimeoutError'); });
+  const result = await research('https://1.1.1.1/');
+  assert.equal(result.incomplete, true);
+  assert.equal(result.documents.length, 1);
+  assert.deepEqual(result.checks, []);
+  assert.match(result.limitations.join(' '), /timed out/);
+});
+
+test('a discovery timeout before any text was retrieved fails the investigation', async t => {
+  serveOnce(t, 403, { 'content-type': 'text/plain' }, '');
+  t.mock.method(Runner.prototype, 'run', async () => { throw new DOMException('Time limit', 'TimeoutError'); });
+  await assert.rejects(research('https://1.1.1.1/'), { name: 'TimeoutError' });
 });
