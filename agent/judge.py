@@ -100,6 +100,8 @@ EXAMPLES = (
 def prioritize(evidence, limit=54):
     buckets = defaultdict(list)
     for item in dict.fromkeys(evidence):
+        if item.kind == "customer candidate":
+            continue
         bucket = item.kind if not item.kind.startswith("vendor page") else item.source_url
         buckets[bucket].append(item)
     selected = []
@@ -310,6 +312,10 @@ def purchase_caution(url, collection):
         domain(item.source_url) == vendor_host or domain(item.source_url).endswith("." + vendor_host)
     )]
     for item in primary:
+        if item.kind == "customer role ambiguity" and not any(
+            evidence.kind == "customer confirms use" for evidence in collection.evidence
+        ):
+            return [flag("Yellow", item.claim, item)], "Verify product-specific customers independently; partner and program badges don't establish paid use."
         if item.kind == "image navigation" and re.search(r"\.aspx?$", urlsplit(item.source_url).path, re.I):
             return [flag("Yellow", item.claim, item)], "Verify the exact workflow and support pages; the legacy entry point relies on image-only links."
         if item.kind == "search excerpt: incidents" and re.search(

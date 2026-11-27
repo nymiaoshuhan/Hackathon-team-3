@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from agent import COLUMNS, identity_hint, normalize, run_vendor, write_results
+from customers import inspect_customer
 from evidence import Collection, Evidence, Http, Response, public_url
 from judge import documented_blocker, judge, model_request, provider_for, purchase_caution, validate
 from research import corroborate_records
@@ -154,6 +155,25 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(purchase_caution(url.replace("old-widget", "new-widget"), Collection([evidence])), ([], ""))
         flags, _ = purchase_caution(url, Collection([evidence]))
         self.assertEqual(flags[0]["source_url"], evidence.source_url)
+
+    def test_customer_confirmation_requires_own_site_and_an_operating_statement(self):
+        url = "https://customer-inc.org/news"
+        vendor = "https://product-vendor.net/"
+        responses = {
+            url: Response(url, 200, "text/html",
+                          '<meta property="og:site_name" content="Customer Inc"><article>'
+                          '<p>We deployed Product Vendor for our payroll workflow.</p></article>'),
+            vendor: Response(vendor, 200, "text/html", "<p>Customer Inc deployed Product Vendor.</p>"),
+        }
+        http = FixtureHttp(responses)
+        self.assertIsNone(inspect_customer(http, vendor, vendor, ["Customer Inc"]))
+        self.assertIsNone(inspect_customer(http, url, vendor, ["Wrong company"]))
+        verified = inspect_customer(http, url, vendor, ["Customer Inc"])
+        self.assertEqual((verified.kind, verified.source_url), ("customer confirms use", url))
+        responses[url] = Response(url, 200, "text/html",
+                                  '<meta property="og:site_name" content="Customer Inc">'
+                                  '<p>Product Vendor participates in our partner program.</p>')
+        self.assertEqual(inspect_customer(http, url, vendor, ["Customer Inc"]).kind, "partner role evidence")
 
     def test_regional_risk_blocker_requires_privileged_access_and_direct_record(self):
         home = "https://example.org/"

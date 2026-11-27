@@ -13,6 +13,7 @@ from urllib.parse import unquote, urlsplit
 
 from dotenv import load_dotenv
 
+from customers import confirm_customers
 from evidence import Collection, Http
 from judge import LABELS, judge
 from research import archive, collect_search, registration
@@ -72,6 +73,12 @@ def run_vendor(raw_url, http, *, screenshot=True, excluded_row=None, audit=False
             bundle.vendor = output.vendor or bundle.vendor
     bundle.product = bundle.product or identity_hint(url) or domain(url)
     bundle.vendor = bundle.vendor or domain(url)
+    try:
+        customers = confirm_customers(http, url, bundle.evidence)
+        bundle.evidence.extend(customers.evidence)
+        bundle.notes.extend(customers.notes)
+    except (ValueError, RuntimeError, OSError) as error:
+        bundle.notes.append(f"Customer verification unavailable ({type(error).__name__}).")
     result, mode, note = judge(url, bundle, excluded_row, http)
     if note:
         bundle.notes.append(note)

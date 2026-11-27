@@ -32,6 +32,8 @@ SIGNALS = {
 }
 RELEASE_DATE = re.compile(r"\b(?:20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}\.\d{1,2}\.20\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? 20\d{2})\b", re.I)
 ADOPTION_NUMBER = re.compile(r"\b(\d[\d,.]*)\s*(k|m|b|millions?|billions?)?\s*\+?\s+(users|customers|churches|clients|downloads|people)\b", re.I)
+NON_CUSTOMER_LABEL = re.compile(r"\b(?:partner|store|marketplace|program(?:me)?|badge|certified|certification|seal|siegel|award)\b", re.I)
+CUSTOMER_HEADING = re.compile(r"trusted by|our customers|customer stories|references|unsere kunden|referenzen", re.I)
 BROWSER_SLOTS = threading.BoundedSemaphore(2)
 
 
@@ -124,15 +126,23 @@ def extract(out, soup, url, purpose):
             if alt not in logo_names:
                 logo_names.append(alt)
             section = img.find_parent(["section", "article"]) or img.parent
-            heading_tag = section.find(["h2", "h3", "h4"]) if section else None
-            if heading_tag:
-                label = clean(heading_tag.get_text(" ", strip=True), 90)
-                logo_context.setdefault(label, set()).add(alt)
+            if section:
+                captions = [clean(tag.get_text(" ", strip=True), 95)
+                            for tag in section.find_all(["h2", "h3", "h4", "p", "span"], limit=20)]
+                heading = next((caption for caption in captions if CUSTOMER_HEADING.search(caption)), "")
+                if heading:
+                    logo_context.setdefault(heading, set()).add(alt)
+                if heading or purpose == "customers":
+                    name = clean(re.sub(r"\s*(?:company )?logo\s*$", "", alt, flags=re.I), 70)
+                    if len(name) >= 4 and not NON_CUSTOMER_LABEL.search(name):
+                        emit(out, "customer candidate", name, url)
     if logo_names:
         emit(out, "logo text", "Possible customer, partner or site logos (unverified alt text): " + ", ".join(logo_names[:12]), url)
     for label, labels in list(logo_context.items())[:3]:
-        if re.search(r"trust|customer|partner|client|kunden|unser", label, re.I):
-            emit(out, "logo presentation", f'Image labels under vendor heading “{label}”: {", ".join(sorted(labels)[:12])}. Roles are not independently verified.', url)
+        emit(out, "logo presentation", f'Image labels under vendor heading “{label}”: {", ".join(sorted(labels)[:12])}. Roles are not independently verified.', url)
+        non_customer = sorted(name for name in labels if NON_CUSTOMER_LABEL.search(name))
+        if len(non_customer) >= 2:
+            emit(out, "customer role ambiguity", f'Under “{label}”, {len(non_customer)} of {len(labels)} displayed logo labels explicitly refer to programs, partners, stores or seals: {", ".join(non_customer[:8])}. The badges do not establish paid customer use.', url)
     image_links = [a for a in soup.select("nav a, header a, a") if (
         a.find("img") and not a.get_text(strip=True)
         and not re.fullmatch(r"(?:/|#|index\.\w+)?", a.get("href", ""))
