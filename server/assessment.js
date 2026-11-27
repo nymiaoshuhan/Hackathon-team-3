@@ -8,6 +8,12 @@ const criteria = [
 ];
 
 const independentRoles = new Set(['partner', 'customer', 'registry', 'authority']);
+const confirmedSummaries = {
+  identity: 'The source identifies the product at the submitted domain.',
+  independent: 'A separate publisher connects the product to the submitted domain.',
+  operator: 'The source provides public information about the operator.',
+  substance: 'The source documents how the product works or records a specific change.',
+};
 const clean = value => typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim() : '';
 
 function hostOf(value) {
@@ -24,8 +30,12 @@ function site(host) {
   return getDomain(host, { allowPrivateDomains: true }) || host;
 }
 
+function escapeRegex(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function namesHost(text, host) {
-  const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = escapeRegex(host);
   // A suffix or lookalike of the submitted hostname cannot establish identity.
   return new RegExp('(?:^|[^\\p{L}\\p{N}_.@-])' + escaped +
     '(?=$|[^\\p{L}\\p{N}_.@-]|\\.(?=\\s|$))', 'iu').test(text);
@@ -33,10 +43,12 @@ function namesHost(text, host) {
 
 function tiesToHost(doc, quote, host, productName) {
   if (namesHost(quote, host)) return true;
-  // A named product in the quoted passage and an exact-host link in its
-  // source provide a verifiable association when anchor text hides the URL.
-  return productName.length >= 2 && quote.toLowerCase().includes(productName.toLowerCase()) &&
-    (doc.links ?? []).some(link => hostOf(link) === host);
+  // Plain page-wide link inventories cannot bind a quotation to a domain.
+  const name = productName.toLowerCase();
+  return name.length >= 2 && quote.toLowerCase().includes(name) &&
+    (doc.linkContexts ?? []).some(link => hostOf(link.url) === host &&
+      clean(link.text).toLowerCase().includes(name) &&
+      (clean(link.text).includes(quote) || quote.includes(clean(link.text))));
 }
 
 function supports(proposal, item, doc, context) {
@@ -51,30 +63,51 @@ function supports(proposal, item, doc, context) {
   if (proposal.status === 'contradicted') {
     return independent && tied;
   }
-  if (proposal.id === 'independent') return independent && tied;
+  if (proposal.id === 'independent') {
+    const original = context.identitySources;
+    const distinctPublisher = !original.length || original.some(first =>
+      site(hostOf(first.url)) !== site(sourceHost));
+    const copied = original.some(first => clean(first.text).includes(quote)) ||
+      context.vendorDocs.some(first => clean(first.text).includes(quote));
+    return independent && tied && distinctPublisher && !copied;
+  }
   if (proposal.id === 'identity') return sourceHost === context.host || tied;
   return !separate || tied;
 }
 
 function documentedContradiction(item, doc, host) {
   if (!['authority', 'registry'].includes(item.relation) || !namesHost(item.quote, host)) return false;
-  // Reserve an overriding verdict for explicit documentary language. Other
-  // supported disagreements stay visible as mixed evidence.
-  return doc.origin === 'web_search' &&
-    /\b(impersonat(?:es?|ing|ion)|not (?:affiliated|associated|operated|owned|authorized)|unauthori[sz]ed (?:copy|domain)|placeholder|reserved (?:domain|for)|(?:documentation|illustrative) examples?)\b/i.test(item.quote);
+  // Check both the excerpt and the containing sentence. A quote can be exact
+  // while omitting "it is false that" from the beginning of the sentence.
+  const hostPattern = '(?<![\\p{L}\\p{N}_@.-])' + escapeRegex(host);
+  const reserved = ' (?:is|are) (?:a placeholder(?: domain)?|(?:reserved|maintained|designated) (?:solely |exclusively )?for (?:use in )?(?:documentation|examples?|illustrative purposes))';
+  const impersonating = ' (?:impersonates|is impersonating|is an unauthori[sz]ed (?:copy|domain)|is not (?:affiliated with|operated by|owned by|authorized by))';
+  const subjectList = '(?:,? (?:and|or) [a-z0-9.-]+)?';
+  const assertion = new RegExp(hostPattern + '(?:' + subjectList + reserved + '|' + impersonating + ')\\b', 'iu');
+  const uncertain = /\b(if|unless|whether|could|might|maybe|may|would|hypothetical|suppose|false|falsely|incorrect|incorrectly|rumou?r|alleg(?:e[ds]?|ation)|den(?:y|ies|ied)|disput(?:e[sd]?|ing)|unconfirmed|unverified|no evidence|no indication|not true|no longer|was once)\b|\?/iu;
+  const quote = clean(item.quote);
+  if (!assertion.test(quote)) return false;
+  const sentences = new Intl.Segmenter('en', { granularity: 'sentence' }).segment(clean(doc.text));
+  for (const { segment } of sentences) {
+    if (!assertion.test(segment) || !(segment.includes(quote) || quote.includes(segment.trim()))) continue;
+    if (uncertain.test(segment) || uncertain.test(quote)) continue;
+    return true;
+  }
+  return false;
 }
 
 /** Accept documents only from the trusted collector. Proposals never add sources. */
 export function assess(inputUrl, raw) {
   const inputHost = hostOf(inputUrl);
   const productName = clean(raw.productName).slice(0, 180);
-  const context = { host: inputHost, productName };
   const documents = new Map((raw.documents ?? []).filter(doc =>
     doc.id && hostOf(doc.url) && ['submitted', 'web_search'].includes(doc.origin) &&
     clean(doc.text)).map(doc => [doc.id, doc]));
   const limitations = new Set((raw.limitations ?? []).map(clean).filter(Boolean));
   const used = new Map();
-  let material = false;
+  const context = { host: inputHost, productName, identitySources: [],
+    vendorDocs: [...documents.values()].filter(doc => site(hostOf(doc.url)) === site(inputHost)) };
+  let materialQuote = '';
   const checks = criteria.map(criterion => {
     const proposal = (raw.checks ?? []).find(entry => entry.id === criterion.id);
     const evidence = [];
@@ -84,15 +117,20 @@ export function assess(inputUrl, raw) {
         limitations.add('A proposed citation could not be validated for the ' + criterion.label.toLowerCase() + ' check.');
         continue;
       }
-      evidence.push({ sourceId: doc.id, quote: clean(item.quote) });
+      const quote = clean(item.quote);
+      if (evidence.some(entry => entry.sourceId === doc.id && entry.quote === quote)) continue;
+      evidence.push({ sourceId: doc.id, quote });
+      if (criterion.id === 'identity' && proposal.status === 'confirmed') context.identitySources.push(doc);
       used.set(doc.id, { id: doc.id, url: doc.url, title: clean(doc.title) || hostOf(doc.url) });
       if (proposal.id === 'identity' && proposal.status === 'contradicted' &&
-          proposal.material === true && documentedContradiction(item, doc, inputHost)) material = true;
+          proposal.material === true && documentedContradiction(item, doc, inputHost)) materialQuote = quote;
     }
     const status = evidence.length && ['confirmed', 'contradicted'].includes(proposal?.status)
       ? proposal.status : 'unverified';
-    return { ...criterion, status, points: status === 'confirmed' ? criterion.maxPoints : 0,
-      summary: status === 'unverified' ? 'Available evidence did not establish this check.' : clean(proposal.summary),
+    const summary = status === 'confirmed' ? confirmedSummaries[criterion.id] :
+      status === 'contradicted' ? 'The cited source conflicts with the claim under review.' :
+      'Available evidence did not establish this check.';
+    return { ...criterion, status, points: status === 'confirmed' ? criterion.maxPoints : 0, summary,
       evidenceIds: [...new Set(evidence.map(item => item.sourceId))], evidence };
   });
 
@@ -105,12 +143,13 @@ export function assess(inputUrl, raw) {
   if (failed) {
     verdict = null;
     interpretation = 'The investigation failed before usable evidence was collected. Retry the URL to obtain an assessment.';
-  } else if (material) {
+  } else if (materialQuote) {
     verdict = 'red';
-    interpretation = identity.summary + ' Review the cited authority’s statement before relying on this domain.';
+    interpretation = 'The cited authority reports “' + materialQuote + '” Review that statement before relying on this domain.';
   } else if (!raw.incomplete && !disagreement && identity.points && independent.points && score >= 70) {
     verdict = 'green';
-    interpretation = independent.summary + ' Review the cited records and product security documentation before adoption. This evidence score does not constitute an endorsement or security audit.';
+    interpretation = 'Independent evidence connects this product to ' + inputHost + '. The source states “' +
+      independent.evidence[0].quote + '” Review the cited records and product security documentation before adoption. This evidence score does not constitute an endorsement or security audit.';
   } else {
     verdict = 'yellow';
     const missing = checks.filter(check => check.status !== 'confirmed').map(check => check.label.toLowerCase());

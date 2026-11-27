@@ -77,3 +77,53 @@ test('a self-declared or ambiguous contradiction cannot trigger red', () => {
   ambiguous.checks[0].evidence[0].quote = quote;
   assert.equal(assess(url, ambiguous).verdict, 'yellow');
 });
+
+test('hypotheticals, negations and a different subject cannot trigger red', () => {
+  for (const [text, quote = text] of [
+    ['It is false that orbit-fixture.example impersonates our operator.', 'orbit-fixture.example impersonates our operator.'],
+    ['If orbit-fixture.example is reserved for documentation, contact our office.'],
+    ['Is orbit-fixture.example impersonating the operator?'],
+    ['The official domain orbit-fixture.example warned users that fake.example impersonates the company.'],
+    ['Technical teams at orbit-fixture.example prevent impersonation.'],
+    ['The domain orbit-fixture.example is not a placeholder.'],
+  ]) {
+    const research = fixture('contradiction');
+    research.documents[1].text = text;
+    research.checks[0].evidence[0].quote = quote;
+    assert.equal(assess(url, research).verdict, 'yellow', text);
+  }
+});
+
+test('a website-wide link cannot corroborate a similarly named product', () => {
+  const research = fixture('credible');
+  research.productName = 'Orbit Desk';
+  const quote = 'Our integration creates a support ticket in Orbit Desk.';
+  const doc = research.documents[1];
+  doc.text = quote + ' Sponsors include Orbit Desk.';
+  doc.links = [url];
+  research.checks[1].evidence[0].quote = quote;
+  assert.equal(assess(url, research).verdict, 'yellow');
+  doc.linkContexts = [{ url, text: 'Sponsors include Orbit Desk.' }];
+  assert.equal(assess(url, research).verdict, 'yellow');
+  doc.linkContexts = [{ url, text: quote }];
+  assert.equal(assess(url, research).verdict, 'green');
+});
+
+test('copied vendor evidence and the same publisher cannot corroborate themselves', () => {
+  const copied = fixture('credible');
+  copied.documents[0].text += ' ' + copied.documents[1].text;
+  assert.equal(assess(url, copied).verdict, 'yellow');
+  const repeated = fixture('credible');
+  repeated.checks[0].evidence = repeated.checks[1].evidence;
+  assert.equal(assess(url, repeated).verdict, 'yellow');
+});
+
+test('unsupported model summaries are never rendered as facts', () => {
+  const research = fixture('credible');
+  research.checks[1].summary = 'A government agency guarantees this product is safe.';
+  research.checks[1].evidence.push(research.checks[1].evidence[0]);
+  const result = assess(url, research);
+  assert.equal(result.checks[1].evidence.length, 1);
+  assert.ok(!JSON.stringify(result).includes('government agency'));
+  assert.ok(result.interpretation.includes(research.documents[1].text));
+});
