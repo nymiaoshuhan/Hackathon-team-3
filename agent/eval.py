@@ -11,7 +11,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from agent import common_args, run_vendor
+from agent import common_args, report_usage, run_vendor
 from evidence import Http
 from judge import LABELS
 
@@ -80,8 +80,10 @@ def main():
         labels = read_labels(args.labels)
         if not labels or any(row["overall"] not in LABELS for row in labels):
             parser.error("expected a nonempty labeled CSV with Green, Yellow or Red verdicts")
-        results = evaluate(labels, Http(args.cache_dir), args.workers, not args.no_screenshot)
+        http = Http(args.cache_dir)
+        results = evaluate(labels, http, args.workers, not args.no_screenshot)
         metrics = summarize(results)
+        metrics["api_usage"] = report_usage(http)
         args.out.write_text(json.dumps({"metrics": metrics, "rows": results}, ensure_ascii=False, indent=2) + "\n",
                             encoding="utf-8")
         print(f"Saved to {args.out}")

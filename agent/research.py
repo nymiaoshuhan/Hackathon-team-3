@@ -14,12 +14,16 @@ from vendor_site import clean, domain
 TOPICS = {
     "incidents": "data breach security incident compromised disclosure status page",
     "enforcement": "regulator fine enforcement FTC GDPR court lawsuit consumer protection",
-    "ownership": "acquired acquisition owner private equity CEO rebrand renamed formerly",
-    "lifecycle": "discontinued product end of life sunset support documentation recent release",
-    "market": "customer case study partner marketplace reviews Reddit LinkedIn employee count GitHub",
-    "jurisdiction": "company legal entity headquarters incorporation Russia ownership",
+    "ownership": "acquired acquisition owner private equity CEO ownership press release",
+    "naming": "product documentation licensing rename rebrand formerly successor exact product names",
+    "lifecycle": "discontinued product end of life sunset support roadmap recent release",
+    "customers": "customer case study partner marketplace customer references reviews Reddit",
+    "traction": "company legal entity team LinkedIn employee count customers users traction GitHub",
+    "jurisdiction": 'Russia operations "Yale CELI" sanctions ownership',
 }
 ARCHIVE = "https://web.archive.org"
+SOURCE_CHECK_TOPICS = {"search excerpt: enforcement", "search excerpt: jurisdiction"}
+PUBLIC_RECORD_SOURCES = {"ftc.gov", "noyb.eu", "som.yale.edu", "yalerussianbusinessretreat.com"}
 REGISTRY_PREFIX = {
     "de": "https://www.denic.de/en/service/whois-service/",
     "uk": "https://www.nominet.uk/lookup/",
@@ -44,7 +48,8 @@ def registrable(url):
 
 def registration(http, url):
     name = registrable(url)
-    source = f"https://rdap.org/domain/{quote(name, safe='.')}"
+    endpoint = "https://rdap.denic.de" if name.endswith(".de") else "https://rdap.org"
+    source = f"{endpoint}/domain/{quote(name, safe='.')}"
     record = json_body(http.get(source), {})
     for event in record.get("events", []) if isinstance(record, dict) else []:
         if event.get("eventAction") == "registration" and event.get("eventDate"):
@@ -58,8 +63,8 @@ def registration(http, url):
 def archive(http, url):
     name = registrable(url)
     source = ARCHIVE + "/cdx/search/cdx?" + urlencode({
-        "url": name + "/", "matchType": "domain", "output": "json",
-        "filter": "statuscode:200", "fl": "timestamp,original", "limit": 5,
+        "url": name + "/", "output": "json",
+        "filter": "statuscode:200", "fl": "timestamp,original", "limit": 1,
     })
     rows = json_body(http.get(source), [])
     if not (isinstance(rows, list) and len(rows) >= 2):
@@ -73,7 +78,7 @@ def archive(http, url):
             continue
         link = f"{ARCHIVE}/web/{stamp}/{original}"
         date = f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}"
-        out.evidence.append(Evidence("archived page", f"Wayback indexes an HTTP 200 capture of {original} on {date}; earliest usable result in the sampled index, not an incorporation date.", link))
+        out.evidence.append(Evidence("archived page", f"Wayback indexes an HTTP 200 capture of {original} on {date}; earliest result for the queried homepage, not an incorporation date.", link))
         snapshot = http.get(link)
         if snapshot and snapshot.status == 200 and "html" in snapshot.content_type:
             soup = BeautifulSoup(snapshot.body, "html.parser")
@@ -96,6 +101,7 @@ def search(topic, terms, identity, http, key):
         "https://api.tavily.com/search",
         payload={"query": query[:395], "search_depth": "basic", "max_results": 4},
         headers={"Authorization": f"Bearer {key}"},
+        tavily=True,
     )
     data = json_body(response, None)
     if not isinstance(data, dict):
@@ -140,6 +146,37 @@ def github(http, evidence):
     return []
 
 
+def corroborate_records(http, name, items):
+    subject = name.split(".")[0].replace("-", " ")
+    if len(subject) < 4:
+        return []
+    pattern = re.compile(r"\b" + re.escape(subject) + r"\b", re.I)
+    candidates = [item for item in items if item.kind in SOURCE_CHECK_TOPICS and (
+        domain(item.source_url) in PUBLIC_RECORD_SOURCES
+        or domain(item.source_url).endswith((".gov", ".gov.uk", ".europa.eu"))
+    )]
+    candidates.sort(key=lambda item: not bool(pattern.search(item.claim)))
+    result = []
+    for item in candidates[:3]:
+        page = http.get(item.source_url, crawl=True)
+        if not (page and page.status == 200 and "html" in page.content_type):
+            continue
+        soup = BeautifulSoup(page.body, "html.parser")
+        scope = soup.find("main") or soup.find("article") or soup
+        blocks = [
+            clean(tag.get_text(" ", strip=True), 1100)
+            for tag in scope.find_all(["tr", "p", "li", "h1"])
+        ]
+        matches = list(dict.fromkeys(block for block in blocks if pattern.search(block)))
+        matches.sort(key=lambda block: not bool(re.search(
+            r"\bunlawful\b|not disclosed|provid(?:es|ing) services|final order|consent order|\bsettlement\b|\bviolat(?:es|ion|ed)\b|to pay", block, re.I
+        )))
+        for block in matches[:3]:
+            label = "direct third-party source" if domain(page.url) in PUBLIC_RECORD_SOURCES - {"ftc.gov"} else "direct public record"
+            result.append(Evidence(label, f'Page text: “{block}”', page.url))
+    return result
+
+
 def collect_search(http, url, identity):
     key = os.getenv("TAVILY_API_KEY")
     if not key:
@@ -162,4 +199,5 @@ def collect_search(http, url, identity):
                     seen.add(item.source_url)
                     out.evidence.append(item)
     out.evidence.extend(github(http, out.evidence))
+    out.evidence.extend(corroborate_records(http, name, out.evidence))
     return out

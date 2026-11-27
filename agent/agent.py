@@ -72,7 +72,7 @@ def run_vendor(raw_url, http, *, screenshot=True, excluded_row=None, audit=False
             bundle.vendor = output.vendor or bundle.vendor
     bundle.product = bundle.product or identity_hint(url) or domain(url)
     bundle.vendor = bundle.vendor or domain(url)
-    result, mode, note = judge(url, bundle, excluded_row)
+    result, mode, note = judge(url, bundle, excluded_row, http)
     if note:
         bundle.notes.append(note)
     result = {"url": url, **result, "judge_mode": mode, "coverage_notes": bundle.notes}
@@ -124,6 +124,17 @@ def common_args(parser):
     parser.add_argument("--no-screenshot", action="store_true", help="skip routine screenshots, retaining JS fallback")
 
 
+def report_usage(http):
+    usage = http.usage_summary()
+    print(f"Tavily: {usage['tavily_estimated_credits']} estimated credits, "
+          f"{usage['tavily_cache_hits']} cache hits, {usage['tavily_failed_requests']} failed requests",
+          file=sys.stderr)
+    print(f"LLM: {usage['llm_requests']} requests, {usage['llm_cache_hits']} cache hits, "
+          f"{usage['llm_input_tokens']} input / {usage['llm_output_tokens']} output tokens",
+          file=sys.stderr)
+    return usage
+
+
 def main():
     load_dotenv()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -155,6 +166,7 @@ def main():
             print(f"Wrote {len(results)} verdict(s) to {args.out}", file=sys.stderr)
         else:
             print(json.dumps(results[0] if args.url else results, ensure_ascii=False, indent=2))
+        report_usage(http)
     except (ValueError, OSError) as error:
         parser.error(str(error))
 

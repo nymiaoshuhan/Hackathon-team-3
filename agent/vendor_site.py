@@ -12,21 +12,21 @@ from evidence import Collection, Evidence, USER_AGENT, public_url
 
 PAGE_TYPES = {
     "about": r"about|company|über uns|unternehmen",
-    "imprint": r"imprint|impressum|legal notice",
+    "imprint": r"imprint|impressum|legal notice|kontakt|contact",
     "pricing": r"pricing|plans|preise",
     "customers": r"customers|case stud(?:y|ies)|success stor|referenz|kunden",
     "privacy": r"privacy|datenschutz",
     "security": r"security|trust cent(?:er|re)|compliance|sicherheit",
     "docs": r"documentation|\bdocs\b|help cent(?:er|re)|knowledge base|support|handbuch",
-    "releases": r"changelog|release notes|releases|what.s new|versionshistorie",
+    "releases": r"changelog|release notes|releases|what.s new|versionshistorie|aktuelles|neuigkeiten",
     "careers": r"careers|jobs|karriere",
 }
 SIGNALS = {
     "release": r"release notes|latest release|latest version|version \d+\.\d+|changelog|updated on|last updated|zuletzt aktualisiert",
-    "traction claim": r"(?:\d[\d,.]*\+?\s+(?:k |m |million |billion )?(?:customers|users|clients|companies|downloads|kunden|nutzer)|trusted by)",
+    "traction claim": r"\b\d[\d,.]*\s*(?:[km]\b|millions?\b|billions?\b|mio\.?)?\s*\+?\s+(?:customers|users|clients|companies|downloads|people|kunden|nutzer)\b|trusted by",
     "certification claim": r"ISO[ /-]*(?:IEC[ /-]*)?27001|SOC[ -]*2|BSI C5",
     "ownership claim": r"a [^.!?]{2,45} company\b|formerly|previously known as|acquired by|part of the .{2,40} group|ehemals|übernommen",
-    "lifecycle notice": r"discontinued|end.of.life|end of support|no longer maintained|sunset|maintenance mode|eingestellt|nicht mehr weiterentwickelt",
+    "lifecycle notice": r"discontinued|end.of.life|end of support|no longer maintained|sunset|maintenance mode|eingestellt|nicht mehr weiterentwickelt|(?:das|zum) letzte[nm] jahr|entwicklung endet",
     "legal entity": r"(?:[\w&.-]+\s+){1,4}(?:GmbH|UG|Ltd\.?|Inc\.?|LLC|GmbH & Co\. KG|SAS|AG)\b|Handelsregister|HRB \d+",
 }
 RELEASE_DATE = re.compile(r"\b(?:20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}\.\d{1,2}\.20\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? 20\d{2})\b", re.I)
@@ -83,8 +83,23 @@ def extract(out, soup, url, purpose):
         emit(out, "vendor page", f"{purpose}: {title or heading}", url)
 
     body = clean(soup.get_text(" ", strip=True), 65_000)
+    if purpose == "product":
+        fixed_end = re.search(
+            r"[^.!?]{0,55}(?:Softwareentwicklung wird (?:nach|zum Jahresende)\s+20\d{2}\s+eingestellt|"
+            r"(?:we will stop|we are ending) (?:development|support) (?:on|after|in) [^.!?]{3,45})[^.!?]{0,75}",
+            body, re.I,
+        )
+        if fixed_end:
+            emit(out, "dated end-of-development notice", f'Exact product page says: “{clean(fixed_end.group())}”', url)
+    linked = list(links(soup, url))
+    for target, label in linked:
+        if (re.search(PAGE_TYPES["privacy"], label, re.I)
+                and re.search(r"\.docx?$", urlsplit(target).path, re.I)):
+            alternate = list(dict.fromkeys(name for href, name in linked if href == target and name and name != label))
+            shared = f" The same URL is also labeled '{alternate[0]}'." if alternate else ""
+            emit(out, "privacy artifact", f"The link labeled “{label}” points to a Word document ({target}).{shared} This describes the link, not the document's contents.", url)
     for kind, pattern in SIGNALS.items():
-        for match in list(re.finditer(pattern, body, re.I))[:2]:
+        for match in list(re.finditer(pattern, body, re.I))[:(5 if kind == "traction claim" else 2)]:
             snippet = clean(body[max(0, match.start() - 45): match.end() + 110])
             emit(out, kind, f'Page text: “{snippet}”', url)
     for match in re.finditer(r"(?:©|copyright|\(c\))\s*.{0,28}?\b(?:19|20)\d{2}(?:\s*[-–]\s*(?:19|20)\d{2})?", footer_text or body, re.I):
@@ -99,14 +114,23 @@ def extract(out, soup, url, purpose):
         if dates:
             emit(out, "page date", f"Dates printed on the {purpose} page: {', '.join(dates)}", url)
     logo_names = []
+    logo_context = {}
     for img in soup.find_all("img", alt=True):
         alt = clean(img["alt"], 90)
         label = " ".join([alt, str(img.get("src", "")), str(img.get("class", ""))])
         if alt and (purpose == "customers" or re.search(r"customer|client|partner|logo", label, re.I)):
             if alt not in logo_names:
                 logo_names.append(alt)
+            section = img.find_parent(["section", "article"]) or img.parent
+            heading_tag = section.find(["h2", "h3", "h4"]) if section else None
+            if heading_tag:
+                label = clean(heading_tag.get_text(" ", strip=True), 90)
+                logo_context.setdefault(label, set()).add(alt)
     if logo_names:
         emit(out, "logo text", "Possible customer, partner or site logos (unverified alt text): " + ", ".join(logo_names[:12]), url)
+    for label, labels in list(logo_context.items())[:3]:
+        if re.search(r"trust|customer|partner|client|kunden|unser", label, re.I):
+            emit(out, "logo presentation", f'Image labels under vendor heading “{label}”: {", ".join(sorted(labels)[:12])}. Roles are not independently verified.', url)
     image_links = [a for a in soup.select("nav a, header a") if a.find("img") and not a.get_text(strip=True)]
     if image_links:
         emit(out, "image navigation", f"{len(image_links)} sampled header/navigation links contain images without visible link text.", url)

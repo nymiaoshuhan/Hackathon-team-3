@@ -7,6 +7,7 @@ import os
 import socket
 import threading
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -81,6 +82,23 @@ class Http:
         self.robots = {}
         self.robot_locks = {}
         self.local = threading.local()
+        self.usage = Counter()
+
+    def count(self, **stats):
+        with self.lock:
+            self.usage.update(stats)
+
+    def usage_summary(self):
+        usage = dict(self.usage)
+        return {
+            "tavily_estimated_credits": usage.get("tavily_credits", 0),
+            "tavily_cache_hits": usage.get("tavily_cache_hits", 0),
+            "tavily_failed_requests": usage.get("tavily_failed_requests", 0),
+            "llm_requests": usage.get("llm_requests", 0),
+            "llm_cache_hits": usage.get("llm_cache_hits", 0),
+            "llm_input_tokens": usage.get("llm_input_tokens", 0),
+            "llm_output_tokens": usage.get("llm_output_tokens", 0),
+        }
 
     def session(self):
         if not hasattr(self.local, "session"):
@@ -143,12 +161,14 @@ class Http:
     def get(self, url, *, crawl=False):
         return self.request(url, crawl=crawl)
 
-    def request(self, url, *, crawl=False, payload=None, headers=None):
+    def request(self, url, *, crawl=False, payload=None, headers=None, tavily=False):
         path = self.path("http", json.dumps([url, payload, crawl], sort_keys=True))
         cached = self.read(path)
         if isinstance(cached, dict) and (not crawl or (
             public_url(url) and self.allowed(url) and self.allowed(cached["url"])
         )):
+            if tavily:
+                self.count(tavily_cache_hits=1)
             return Response(**cached)
         for _ in range(5):
             if not public_url(url) or (crawl and not self.allowed(url)):
@@ -175,9 +195,13 @@ class Http:
                     encoding = result.encoding or "utf-8"
                     response = Response(result.url, result.status_code, content_type,
                                         body[:MAX_BYTES].decode(encoding, errors="replace"))
-                    if result.status_code in {200, 404, 410}:
+                    if tavily:
+                        self.count(**({"tavily_credits": 1} if result.ok else {"tavily_failed_requests": 1}))
+                    if result.status_code == 200 or (not tavily and result.status_code in {404, 410}):
                         self.write(path, asdict(response))
                     return response
             except (requests.RequestException, LookupError):
+                if tavily:
+                    self.count(tavily_failed_requests=1)
                 return None
         return None

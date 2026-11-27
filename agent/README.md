@@ -33,7 +33,7 @@ Keys are optional. Export them or put them in a local, ignored `.env` file:
 
 1. **Vendor pages** — starts with the exact product and homepage, then follows a small sample of relevant links. Extracts corporate and compliance statements, traction counts, logo alt text, lifecycle language, release dates, and linked-page errors. The browser captures a screenshot and fills in JS-heavy pages when needed.
 2. **Domain history** — consults RDAP registration events and Wayback captures; dates belong to the domain/capture, not necessarily to the company. Looks for historical traction text in the available snapshot.
-3. **External research** — parallel Tavily queries cover enforcement, incidents, ownership, lifecycle, social proof, and jurisdictions. When a repository surfaces, GitHub provides metadata and the default branch's latest commit.
+3. **External research** — eight parallel Tavily basic-search topics cover enforcement, incidents, ownership, exact product naming, lifecycle, customers, traction, and jurisdictions. When a repository surfaces, GitHub provides metadata and the default branch's latest commit.
 4. **Judge** — the evidence list has numbered items. The model selects IDs, and the agent resolves those IDs to exact collector URLs. Invalid citations are removed; unsupported high-level calls fall back to local rules. This validates the links' provenance, not whether every model paraphrase is entailed. Review claims and links before relying on them. JSON records coverage limitations and the judge mode, and optionally the collected evidence; CSV is the compact submission view.
 
 Collectors share a bounded HTTP cache and pace requests by host. Website fetches respect robots rules and disallow direct private-network URLs; this CLI is not a sandbox, and should not be exposed as a service that browses arbitrary untrusted input. Network errors, robots denials, missing archive coverage, and empty searches are not negative vendor findings. No agents contact vendors or run active security probes.
@@ -46,6 +46,12 @@ python eval.py --workers 8 --no-screenshot --out eval-results.json
 ```
 
 Evaluation defaults to the labeled event CSV at the repository root; use `--labels` to override the path. The pipeline does not copy the CSV or reviewer notes into `agent/` or send them to the model. It passes only the URL for research, excludes any matching anonymized few-shot pattern, then prints accuracy, judge-mode coverage, a three-way confusion matrix, and per-row disagreements. Keep evaluation files within the event. The scoreboard is a development aid; the live challenge uses previously unseen products.
+
+### API budget
+
+On a cold cache the 40-row evaluation makes at most **320 Tavily credits** (eight searches per vendor at [one credit per basic search](https://docs.tavily.com/documentation/api-credits)), 4% of the team's 8,000-credit budget. An unchanged rerun within 24 hours reuses successful search responses. CLI and evaluation log estimated Tavily credits, cache hits and failed calls; the Tavily dashboard is authoritative for billing.
+
+The default [Nebius gpt-oss-120b](https://nebius.com/models/openai/gpt-oss-120b) public endpoint lists $0.15 per million input tokens and $0.60 per million output tokens. At 7,000 input and 2,000 output tokens per vendor, a cold 40-row evaluation is about **$0.09**; actual token counts are logged. Identical model requests reuse the disk cache, while a model, rubric, or evidence change triggers fresh judging. Other models and vision pricing vary.
 
 ## What the examples teach
 

@@ -1,6 +1,7 @@
 """Turn evidence into an attributable buyer verdict."""
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -27,15 +28,43 @@ Green: operating and credible for the stated use, supported by real customers,
 fresh releases, independent distribution, or adoption. Dated aesthetics,
 open-source governance, a small team, youth, acquisitions, and a responsibly
 disclosed and remediated incident are not grounds on their own for downgrading.
+An independently verified young company with working self-serve pricing and
+documentation can be Green for ordinary use without enterprise certifications.
 Yellow: verify before purchase: actual product-name/licensing ambiguity,
 ownership or PE-driven product changes, legacy-but-supported offering,
 operational dependency on one maintainer in critical use, material security
 history with limited transparency, or insufficient evidence. Ordinary rebranding
 or geographic location alone is not a risk; explain practical buyer impact.
+If a credible product changed hands or names, ask whether a buyer using the old
+product name could get a materially different entitlement, support organization,
+or successor. This can justify Yellow even though the new vendor is solid.
+If product pages, current documentation and historical material give materially
+different names under which buyers can order or seek support, do not dismiss
+ambiguity merely because the offering is active. Assess the ambiguity before
+weighing the vendor's size or lack of enforcement.
+Do not use portfolio-level churn or end-of-life of a different SKU against
+the input product, absent a clear impact on this purchase.
 Red: stop/escalate: well-sourced material regulatory action or privacy abuse,
 serious compromise with unresolved risk, demonstrably deceptive traction or
 borrowed social proof, explicit discontinuation without viable support, or
 substantial verified governance gaps for a high-risk use.
+An explicit, near-term end of development/support with no documented viable
+migration or commitment can be Red while the website still sells the product.
+For privileged access, biometric data, or other sensitive contexts, a documented
+material operational/supply-chain constraint or objectively defective governance
+can be a blocker even without a fine. An independently substantiated current
+geopolitical exposure may matter for a buyer granting privileged access; the
+vendor's nationality and historical presence by themselves do not.
+For alleged deception, compare the actual headline/logo framing or dated
+counts with independent records; customer/partner role mismatch can be direct
+evidence. For governance, look for a concrete defect in the artifacts presented
+to buyers, not just a missing certificate or a thin vendor footprint.
+Red must articulate the exact material blocker. A pending allegation alone
+should usually be Yellow; distinguish it from a confirmed underlying practice.
+A source explicitly reporting a regulator's finding of illegality is materially
+different from a complaint that only alleges misconduct, even if a penalty
+was not imposed. Check attributed quotes and distinguish a third-party report
+from a regulator's own publication.
 
 A copyright year is not a release date. A new domain is not company age. Logos,
 ISO/SOC statements, and numbers on vendor sites are self-reports; validate them
@@ -104,7 +133,7 @@ def provider_for(key):
     return "openai" if key.startswith("sk-") else "nebius"
 
 
-def model_request(key, user, screenshot):
+def model_request(key, user, screenshot, http=None):
     provider = provider_for(key)
     if provider not in PROVIDERS:
         raise ValueError("Unknown LLM_PROVIDER")
@@ -114,6 +143,15 @@ def model_request(key, user, screenshot):
     image = None
     if screenshot and os.getenv("LLM_VISION", "").lower() in {"1", "true", "yes"}:
         image = base64.b64encode(screenshot.read_bytes()).decode("ascii")
+    cache_key = json.dumps([provider, base, model, RUBRIC, user,
+                            hashlib.sha256(image.encode()).hexdigest() if image else None])
+    if http:
+        path = http.path("model", cache_key)
+        cached = http.read(path)
+        if isinstance(cached, dict):
+            http.count(llm_cache_hits=1)
+            return cached
+        http.count(llm_requests=1)
     if provider == "anthropic":
         content = [{"type": "text", "text": user}]
         if image:
@@ -126,21 +164,32 @@ def model_request(key, user, screenshot):
             timeout=(5, 55),
         )
         response.raise_for_status()
-        return parse_content("".join(block["text"] for block in response.json()["content"] if block["type"] == "text"))
-    content = user
-    if image:
-        content = [{"type": "text", "text": user}, {
-            "type": "image_url", "image_url": {"url": "data:image/png;base64," + image}
-        }]
-    response = requests.post(
-        f"{base}/chat/completions",
-        headers={"Authorization": f"Bearer {key}"},
-        json={"model": model, "max_tokens": 3500 if provider == "nebius" else 1800,
-              "messages": [{"role": "system", "content": RUBRIC}, {"role": "user", "content": content}]},
-        timeout=(5, 55),
-    )
-    response.raise_for_status()
-    return parse_content(response.json()["choices"][0]["message"]["content"])
+        packet = response.json()
+        result = "".join(block["text"] for block in packet["content"] if block["type"] == "text")
+    else:
+        content = user
+        if image:
+            content = [{"type": "text", "text": user}, {
+                "type": "image_url", "image_url": {"url": "data:image/png;base64," + image}
+            }]
+        response = requests.post(
+            f"{base}/chat/completions",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"model": model, "max_tokens": 3500 if provider == "nebius" else 1800,
+                  "messages": [{"role": "system", "content": RUBRIC}, {"role": "user", "content": content}]},
+            timeout=(5, 55),
+        )
+        response.raise_for_status()
+        packet = response.json()
+        result = packet["choices"][0]["message"]["content"]
+    if http:
+        usage = packet.get("usage") or {}
+        http.count(llm_input_tokens=usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0,
+                   llm_output_tokens=usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0)
+    parsed = parse_content(result)
+    if http and isinstance(parsed, dict):
+        http.write(path, parsed)
+    return parsed
 
 
 def flag(severity, claim, item):
@@ -190,7 +239,9 @@ def rules(url, collection):
         text = item.claim
         source_host = (urlsplit(item.source_url).hostname or "").lower()
         headline = text.partition(" — ")[0]
-        if (item.kind.startswith("search excerpt:") and source_host in {"www.ftc.gov", "ftc.gov"}
+        if item.kind == "dated end-of-development notice":
+            red.append(flag("Red", item.claim, item))
+        elif (item.kind.startswith("search excerpt:") and source_host in {"www.ftc.gov", "ftc.gov"}
                 and len(subject) >= 4 and re.search(rf"\b{re.escape(subject)}\b", headline, re.I)
                 and re.search(r"\bsettlement\b|\bfinal(?:izes?|ized)?\s+order\b|\bto pay\b|\bfine[d]?\b", headline, re.I)):
             red.append(flag("Red", f"An FTC result names the vendor and reports a material action: {headline}. Read the action for scope.", item))
@@ -204,7 +255,7 @@ def rules(url, collection):
             green.append(flag("Green", "The site presents version or release information; confirm the latest supported release date. " + text, item))
     if red:
         label, confidence = "Red", 0.72
-        summary = "An official enforcement result warrants escalation. Confirm product scope and the current status."
+        summary = "A documented lifecycle or enforcement issue warrants escalation. Confirm scope, viable alternatives, and current status."
     elif green and not yellow and any("recent" in f["claim"].lower() for f in green):
         label, confidence = "Green", 0.56
         summary = "Published release information suggests activity. Verify maintenance and customer adoption independently."
@@ -215,7 +266,7 @@ def rules(url, collection):
             "confidence": confidence, "reasons": red[:3] + yellow[:3] + green[:3], "reasoning": summary}
 
 
-def judge(url, collection, excluded_row=None):
+def judge(url, collection, excluded_row=None, http=None):
     key = os.getenv("LLM_API_KEY")
     if key and collection.evidence:
         evidence = prioritize(collection.evidence)
@@ -228,7 +279,7 @@ def judge(url, collection, excluded_row=None):
                          for i, item in enumerate(evidence, 1)],
         }, ensure_ascii=False)
         try:
-            return validate(model_request(key, payload, collection.screenshot), evidence, collection), "llm", ""
+            return validate(model_request(key, payload, collection.screenshot, http), evidence, collection), "llm", ""
         except (requests.RequestException, OSError, ValueError, KeyError, TypeError, IndexError) as error:
             code = error.response.status_code if isinstance(error, requests.HTTPError) and error.response is not None else type(error).__name__
             return rules(url, collection), "rules", f"LLM verdict unavailable ({code}); used conservative local rules."

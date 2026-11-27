@@ -3,11 +3,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from agent import COLUMNS, identity_hint, normalize, run_vendor, write_results
 from evidence import Collection, Evidence, Http, Response, public_url
-from judge import judge, provider_for, validate
+from judge import judge, model_request, provider_for, validate
+from research import corroborate_records
 from vendor_site import collect_site
 
 
@@ -97,6 +98,52 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(provider_for("sk-ant-test"), "anthropic")
         self.assertEqual(provider_for("sk-proj-test"), "openai")
         self.assertEqual(provider_for("opaque"), "nebius")
+
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("judge.requests.post")
+    def test_model_cache_does_not_bill_same_evidence_twice(self, post):
+        reply = Mock()
+        reply.json.return_value = {
+            "choices": [{"message": {"content": '{"overall":"Yellow"}'}}],
+            "usage": {"prompt_tokens": 70, "completion_tokens": 10},
+        }
+        post.return_value = reply
+        with tempfile.TemporaryDirectory() as directory:
+            http = Http(directory)
+            for _ in range(2):
+                self.assertEqual(model_request("opaque", "review vendor", None, http), {"overall": "Yellow"})
+            self.assertEqual(post.call_count, 1)
+            self.assertEqual(http.usage_summary()["llm_cache_hits"], 1)
+            self.assertEqual(http.usage_summary()["llm_input_tokens"], 70)
+
+    def test_cached_search_costs_no_new_credit(self):
+        url = "https://api.tavily.com/search"
+        payload = {"query": "vendor", "search_depth": "basic"}
+        with tempfile.TemporaryDirectory() as directory:
+            http = Http(directory)
+            key = json.dumps([url, payload, False], sort_keys=True)
+            http.write(http.path("http", key), {
+                "url": url, "status": 200, "content_type": "application/json", "body": '{"results":[]}',
+            })
+            with patch.object(http, "session") as session:
+                self.assertEqual(http.request(url, payload=payload, tavily=True).json(), {"results": []})
+                session.assert_not_called()
+            self.assertEqual(http.usage_summary()["tavily_estimated_credits"], 0)
+            self.assertEqual(http.usage_summary()["tavily_cache_hits"], 1)
+
+    def test_public_record_verifier_requires_subject_in_source(self):
+        url = "https://www.ftc.gov/action"
+        http = FixtureHttp({
+            url: Response(url, 200, "text/html", "<main><p>Acme Ltd. agreed to pay an FTC settlement.</p>"
+                          "<p>Another Company separately reached a settlement.</p></main>"),
+        })
+        search = [Evidence("search excerpt: enforcement", "Agency announces a settlement", url)]
+        records = corroborate_records(http, "acme.example", search)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].source_url, url)
+        self.assertIn("Acme Ltd.", records[0].claim)
+        self.assertNotIn("Another Company", records[0].claim)
+        self.assertEqual(corroborate_records(http, "unrelated.example", search), [])
 
     def test_normalize_and_require_public_http(self):
         self.assertEqual(normalize("example.org/x#y"), "https://example.org/x#y")
