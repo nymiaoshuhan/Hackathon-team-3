@@ -17,6 +17,11 @@ from urllib.robotparser import RobotFileParser
 
 import requests
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
 
 USER_AGENT = "VendorVerdictBot/1.0"
 MAX_BYTES = 1_500_000
@@ -71,10 +76,11 @@ def public_url(url):
 
 
 class Http:
-    def __init__(self, cache_dir, ttl=86400):
+    def __init__(self, cache_dir, ttl=86400, process_pacing=False):
         self.cache = Path(cache_dir)
         self.cache.mkdir(parents=True, exist_ok=True)
         self.ttl = ttl
+        self.process_pacing = process_pacing
         self.lock = threading.Lock()
         self.host_locks = {}
         self.last = {}
@@ -132,6 +138,19 @@ class Http:
             guard = self.host_locks.setdefault(host, threading.Lock())
         with guard:
             delay = max(0.5, self.delays.get(host, 0))
+            if self.process_pacing and fcntl is not None:
+                with self.path("pace", host, ".lock").open("a+", encoding="ascii") as file:
+                    fcntl.flock(file, fcntl.LOCK_EX)
+                    try:
+                        file.seek(0)
+                        previous = float(file.read() or 0)
+                    except ValueError:
+                        previous = 0
+                    time.sleep(max(0, delay - (time.monotonic() - previous)))
+                    file.seek(0)
+                    file.truncate()
+                    file.write(str(time.monotonic()))
+                    return
             time.sleep(max(0, delay - (time.monotonic() - self.last.get(host, 0))))
             self.last[host] = time.monotonic()
 

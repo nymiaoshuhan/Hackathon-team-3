@@ -6,6 +6,7 @@ import csv
 import json
 import re
 import sys
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
@@ -13,6 +14,7 @@ from urllib.parse import unquote, urlsplit
 
 from dotenv import load_dotenv
 
+from batch import bounded_vendor
 from customers import confirm_customers
 from evidence import Collection, Http
 from judge import LABELS, judge
@@ -131,8 +133,8 @@ def common_args(parser):
     parser.add_argument("--no-screenshot", action="store_true", help="skip routine screenshots, retaining JS fallback")
 
 
-def report_usage(http):
-    usage = http.usage_summary()
+def report_usage(http, usage=None):
+    usage = http.usage_summary() if usage is None else usage
     print(f"Tavily: {usage['tavily_estimated_credits']} estimated credits, "
           f"{usage['tavily_cache_hits']} cache hits, {usage['tavily_failed_requests']} failed requests",
           file=sys.stderr)
@@ -148,32 +150,66 @@ def main():
     parser.add_argument("url", nargs="?")
     parser.add_argument("--input", type=Path, help="text file with one vendor URL per line")
     parser.add_argument("--out", type=Path, help=".json or .csv output path (default: stdout JSON)")
+    parser.add_argument("--blind", action="store_true", help="batch submission; defaults to blind.txt and verdicts.csv")
+    parser.add_argument("--timeout", type=positive_int, default=150, help="maximum seconds per batch URL (default 150)")
+    parser.add_argument("--audit-out", type=Path, help="also write the same verdicts to a JSON file")
+    parser.add_argument("--worker-json", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--evidence", action="store_true", help="include all collected evidence in JSON")
     common_args(parser)
     args = parser.parse_args()
+    if args.worker_json:
+        if not args.url:
+            parser.error("worker requires one URL")
+        http = Http(args.cache_dir, process_pacing=True)
+        result = run_vendor(args.url, http, screenshot=not args.no_screenshot, audit=args.evidence)
+        print(json.dumps({"result": result, "usage": http.usage_summary()}, ensure_ascii=False))
+        return
+    if args.blind:
+        if args.url:
+            parser.error("--blind expects a batch input, not a positional URL")
+        args.input = args.input or Path("blind.txt")
+        args.out = args.out or Path("verdicts.csv")
     if bool(args.url) == bool(args.input):
         parser.error("provide a URL or --input")
     if args.out and args.out.suffix.lower() not in {".csv", ".json"}:
         parser.error("--out must end in .csv or .json")
+    if args.audit_out and args.audit_out.suffix.lower() != ".json":
+        parser.error("--audit-out must end in .json")
     try:
         urls = ([args.url] if args.url else [
             line.strip() for line in args.input.read_text(encoding="utf-8-sig").splitlines()
             if line.strip() and not line.lstrip().startswith("#")
         ])
-        urls = list(dict.fromkeys(map(normalize, urls)))
+        urls = list(dict.fromkeys(urls))
         if not urls:
             parser.error("--input contains no vendor URLs")
         http = Http(args.cache_dir)
-        with ThreadPoolExecutor(max_workers=min(12, args.workers)) as pool:
-            results = list(pool.map(
-                lambda url: run_vendor(url, http, screenshot=not args.no_screenshot, audit=args.evidence), urls
-            ))
+        usage = Counter(http.usage_summary())
+        if args.url:
+            results = [run_vendor(args.url, http, screenshot=not args.no_screenshot, audit=args.evidence)]
+            usage.update(http.usage_summary())
+        else:
+            with ThreadPoolExecutor(max_workers=min(12, args.workers)) as pool:
+                pairs = list(pool.map(
+                    lambda url: bounded_vendor(__file__, url, args.timeout, args.cache_dir,
+                                               not args.no_screenshot, args.evidence), urls
+                ))
+            results = [result for result, _ in pairs]
+            for _, counts in pairs:
+                usage.update(counts)
+            unavailable = sum(row["judge_mode"] == "unavailable" for row in results)
+            if unavailable:
+                print(f"{unavailable} vendor(s) returned insufficient evidence. API counts exclude interrupted workers.",
+                      file=sys.stderr)
         if args.out:
             write_results(args.out, results)
             print(f"Wrote {len(results)} verdict(s) to {args.out}", file=sys.stderr)
         else:
             print(json.dumps(results[0] if args.url else results, ensure_ascii=False, indent=2))
-        report_usage(http)
+        if args.audit_out:
+            write_results(args.audit_out, results)
+            print(f"Wrote audit JSON to {args.audit_out}", file=sys.stderr)
+        report_usage(http, usage)
     except (ValueError, OSError) as error:
         parser.error(str(error))
 

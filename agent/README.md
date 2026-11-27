@@ -14,9 +14,12 @@ python -m playwright install chromium
 python agent.py https://stackgini.de/ --evidence
 python agent.py --input urls.txt --out verdicts.csv
 python agent.py --input urls.txt --out verdicts.json --evidence
+python agent.py --blind --input blind.txt --out verdicts.csv --audit-out verdicts.json
 ```
 
 `urls.txt` contains one URL per line; blank lines and lines beginning with `#` are ignored. Add `--no-screenshot` for faster runs; sparse pages can still trigger browser fallback. Use `CHROME_CDP_URL=http://localhost:29229` instead of installing Chromium if you've already got a local Chrome DevTools endpoint. Screenshots and fetches are cached in `cache/` for 24 hours; `--cache-dir` selects another cache. `--workers` controls batch concurrency.
+
+`--blind` defaults to `blind.txt` and `verdicts.csv`. Batch runs isolate each vendor with a 150-second deadline (`--timeout` to change it). Invalid URLs, failed workers, and timeouts produce low-confidence Yellow rows with an insufficient-evidence explanation, not fabricated citations. `--audit-out` writes the same run's JSON (including per-vendor timings) without researching twice.
 
 Keys are optional. Export them or put them in a local, ignored `.env` file:
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from agent import COLUMNS, identity_hint, normalize, run_vendor, write_results
+from batch import bounded_vendor
 from customers import inspect_customer
 from evidence import Collection, Evidence, Http, Response, public_url
 from judge import documented_blocker, judge, model_request, provider_for, purchase_caution, validate
@@ -24,6 +25,17 @@ class FixtureHttp:
 
 
 class AgentTests(unittest.TestCase):
+    def test_timed_out_worker_returns_yellow_without_evidence(self):
+        url = "https://example.org/"
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "slow_worker.py"
+            script.write_text("import time\ntime.sleep(10)\n")
+            result, stats = bounded_vendor(script, url, 0.1, directory, False, False)
+        self.assertEqual((result["url"], result["overall"], result["reasons"]), (url, "Yellow", []))
+        self.assertIn("Insufficient evidence", result["reasoning"])
+        self.assertLess(result["elapsed_seconds"], 3)
+        self.assertEqual(stats, {})
+
     def test_product_identity_stays_separate_from_root(self):
         root = "https://example.org/"
         url = root + "products/widget"
