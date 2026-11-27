@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from agent import COLUMNS, identity_hint, normalize, run_vendor, write_results
 from evidence import Collection, Evidence, Http, Response, public_url
-from judge import documented_blocker, judge, model_request, provider_for, validate
+from judge import documented_blocker, judge, model_request, provider_for, purchase_caution, validate
 from research import corroborate_records
 from vendor_site import collect_site
 
@@ -144,6 +144,16 @@ class AgentTests(unittest.TestCase):
         self.assertIn("Acme Ltd.", records[0].claim)
         self.assertNotIn("Another Company", records[0].claim)
         self.assertEqual(corroborate_records(http, "unrelated.example", search), [])
+
+    def test_purchase_caution_requires_matching_product_and_vendor_source(self):
+        url = "https://example.org/products/old-widget/overview"
+        migration = "We recommend customers migrate from Old Widget to our new offering."
+        evidence = Evidence("purchase transition", migration, "https://docs.example.org/upgrade")
+        unrelated = Evidence("purchase transition", migration, "https://unrelated.org/upgrade")
+        self.assertEqual(purchase_caution(url, Collection([unrelated])), ([], ""))
+        self.assertEqual(purchase_caution(url.replace("old-widget", "new-widget"), Collection([evidence])), ([], ""))
+        flags, _ = purchase_caution(url, Collection([evidence]))
+        self.assertEqual(flags[0]["source_url"], evidence.source_url)
 
     def test_regional_risk_blocker_requires_privileged_access_and_direct_record(self):
         home = "https://example.org/"

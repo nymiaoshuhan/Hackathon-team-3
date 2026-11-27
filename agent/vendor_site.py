@@ -27,9 +27,11 @@ SIGNALS = {
     "certification claim": r"ISO[ /-]*(?:IEC[ /-]*)?27001|SOC[ -]*2|BSI C5",
     "ownership claim": r"a [^.!?]{2,45} company\b|formerly|previously known as|acquired by|part of the .{2,40} group|ehemals|übernommen",
     "lifecycle notice": r"discontinued|end.of.life|end of support|no longer maintained|sunset|maintenance mode|eingestellt|nicht mehr weiterentwickelt|(?:das|zum) letzte[nm] jahr|entwicklung endet",
+    "purchase transition": r"(?:(?:recommend|encourage|advis\w+)\b.{0,35}\b(?:migration|migrat\w+)|migrate from\b|migrating from\b|migrate (?:now )?to\b|not available for (?:new )?purchase|no longer (?:available|offered) for (?:new )?customers|formerly (?:marketed as|called|known as)|licen[cs](?:e|ing) changes)",
     "legal entity": r"(?:[\w&.-]+\s+){1,4}(?:GmbH|UG|Ltd\.?|Inc\.?|LLC|GmbH & Co\. KG|SAS|AG)\b|Handelsregister|HRB \d+",
 }
 RELEASE_DATE = re.compile(r"\b(?:20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}\.\d{1,2}\.20\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? 20\d{2})\b", re.I)
+ADOPTION_NUMBER = re.compile(r"\b(\d[\d,.]*)\s*(k|m|b|millions?|billions?)?\s*\+?\s+(users|customers|churches|clients|downloads|people)\b", re.I)
 BROWSER_SLOTS = threading.BoundedSemaphore(2)
 
 
@@ -131,9 +133,24 @@ def extract(out, soup, url, purpose):
     for label, labels in list(logo_context.items())[:3]:
         if re.search(r"trust|customer|partner|client|kunden|unser", label, re.I):
             emit(out, "logo presentation", f'Image labels under vendor heading “{label}”: {", ".join(sorted(labels)[:12])}. Roles are not independently verified.', url)
-    image_links = [a for a in soup.select("nav a, header a") if a.find("img") and not a.get_text(strip=True)]
-    if image_links:
-        emit(out, "image navigation", f"{len(image_links)} sampled header/navigation links contain images without visible link text.", url)
+    image_links = [a for a in soup.select("nav a, header a, a") if (
+        a.find("img") and not a.get_text(strip=True)
+        and not re.fullmatch(r"(?:/|#|index\.\w+)?", a.get("href", ""))
+    )]
+    if len(image_links) >= 3:
+        emit(out, "image navigation", f"{len(image_links)} linked images have no visible link text on this page; verify navigation and support links.", url)
+    if purpose in {"product", "home", "about", "customers"}:
+        for match in list(ADOPTION_NUMBER.finditer(body))[:12]:
+            amount, scale, unit = match.groups()
+            try:
+                count = float(amount.replace(",", ""))
+            except ValueError:
+                continue
+            count *= {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}.get((scale or "").lower()[:1], 1)
+            if count < 100 or unit.lower() in {"downloads", "people"}:
+                continue
+            excerpt = clean(body[max(0, match.start()-42):match.end()+55], 115)
+            emit(out, "reported adoption count", f'Vendor text: “{excerpt}” ({count:,.0f} reported {unit.lower()}, not independently verified).', url)
     return body
 
 

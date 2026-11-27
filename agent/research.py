@@ -20,6 +20,7 @@ TOPICS = {
     "customers": "customer case study partner marketplace customer references reviews Reddit",
     "traction": "company legal entity team LinkedIn employee count customers users traction GitHub",
     "jurisdiction": 'Russia operations "Yale CELI" sanctions ownership',
+    "procurement": '"formerly" OR "migration" OR "end of support" OR "licensing changes" OR "price increases" vendor product',
 }
 ARCHIVE = "https://web.archive.org"
 SOURCE_CHECK_TOPICS = {"search excerpt: enforcement", "search excerpt: jurisdiction"}

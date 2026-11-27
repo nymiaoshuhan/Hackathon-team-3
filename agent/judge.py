@@ -6,7 +6,8 @@ import json
 import os
 import re
 from collections import defaultdict
-from urllib.parse import urlsplit
+from datetime import date
+from urllib.parse import unquote, urlsplit
 
 import requests
 
@@ -46,6 +47,9 @@ In particular check if the exact product page describes a free vs. paid
 edition with a confusingly shared name, a legacy product sold under a new
 name, or a recently acquired product sold alongside its replacement. Those
 are Yellow purchase risks even if the vendor and software are healthy.
+Likewise, a confirmed recent compromise of the official software-update
+distribution channel warrants Yellow continuity due diligence even when
+remediated; distinguish that from an isolated breach of a corporate website.
 Red: stop/escalate: well-sourced material regulatory action or privacy abuse,
 serious compromise with unresolved risk, demonstrably deceptive traction or
 borrowed social proof, explicit discontinuation without viable support, or
@@ -296,6 +300,39 @@ def documented_blocker(url, collection):
     return [], ""
 
 
+def purchase_caution(url, collection):
+    vendor_host = domain(url)
+    slug = next((part for part in reversed(unquote(urlsplit(url).path).split("/"))
+                 if re.fullmatch(r"[A-Za-z][\w-]{3,}", part)
+                 and part.lower() not in {"overview", "products", "solutions", "software", "index"}), "")
+    product = re.sub(r"[-_]+", r"[-_ ]*", re.escape(slug).replace(r"\-", "-")) if slug else ""
+    primary = [item for item in collection.evidence if (
+        domain(item.source_url) == vendor_host or domain(item.source_url).endswith("." + vendor_host)
+    )]
+    for item in primary:
+        if item.kind == "image navigation" and re.search(r"\.aspx?$", urlsplit(item.source_url).path, re.I):
+            return [flag("Yellow", item.claim, item)], "Verify the exact workflow and support pages; the legacy entry point relies on image-only links."
+        if item.kind == "search excerpt: incidents" and re.search(
+            r"(?:hijack|compromis).{0,65}(?:updat|distribution)|(?:updat|distribution).{0,65}(?:hijack|compromis)", item.claim, re.I,
+        ) and re.search(r"\b(?:20\d{2})\b", item.claim):
+            years = [int(y) for y in re.findall(r"\b20\d{2}\b", item.claim)]
+            if any(date.today().year - 1 <= year <= date.today().year for year in years):
+                return [flag("Yellow", item.claim.partition(" — ")[0], item)], "An official software update-channel incident warrants continuity checks even if fixes have shipped."
+        if product and item.kind in {"purchase transition", "search excerpt: procurement", "search excerpt: lifecycle"}:
+            if re.search(rf"\b{product}\b", item.claim, re.I) and re.search(
+                r"migrat\w+\s+from|(?:recommend|encourage).{0,65}migrat|(?:legacy|supersed\w+).{0,35}(?:product|platform|solution)|no longer (?:available|offered) for (?:purchase|new customers)", item.claim, re.I,
+            ):
+                return [flag("Yellow", item.claim[:410], item)], "The vendor describes a migration or legacy offering. Verify which exact SKU is sold and supported."
+    adoption = next((item for item in primary if item.kind == "reported adoption count" and re.search(
+        r"\(\d{2,},\d{3},\d{3} reported users", item.claim
+    )), None)
+    if adoption and not any(item.kind == "legal entity" for item in primary):
+        return [flag("Yellow", adoption.claim, adoption)], (
+            "Verify the contracting entity and independently substantiate the vendor's unusually large product-adoption claim before approving it."
+        )
+    return [], ""
+
+
 def judge(url, collection, excluded_row=None, http=None):
     key = os.getenv("LLM_API_KEY")
     if key and collection.evidence:
@@ -316,6 +353,12 @@ def judge(url, collection, excluded_row=None, http=None):
                 verdict.update(overall="Red", confidence=max(0.75, min(0.86, verdict["confidence"])),
                                reasons=blockers + [r for r in verdict["reasons"] if r["severity"] not in verified_colors],
                                reasoning=summary)
+            elif verdict["overall"] == "Green":
+                caution, summary = purchase_caution(url, collection)
+                if caution:
+                    verdict.update(overall="Yellow", confidence=min(0.77, verdict["confidence"]),
+                                   reasons=caution + [r for r in verdict["reasons"] if r["severity"] != "Yellow"],
+                                   reasoning=summary)
             return verdict, "llm", ""
         except (requests.RequestException, OSError, ValueError, KeyError, TypeError, IndexError) as error:
             code = error.response.status_code if isinstance(error, requests.HTTPError) and error.response is not None else type(error).__name__
