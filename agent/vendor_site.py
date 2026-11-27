@@ -39,6 +39,7 @@ ADOPTION_NUMBER = re.compile(r"\b(\d[\d,.]*)\s*(k|m|b|millions?|billions?)?\s*\+
 NON_CUSTOMER_LABEL = re.compile(r"\b(?:partner|store|marketplace|program(?:me)?|badge|certified|certification|seal|siegel|award)\b", re.I)
 CUSTOMER_HEADING = re.compile(r"trusted by|our customers|customer stories|references|unsere kunden|referenzen", re.I)
 BROWSER_SLOTS = threading.BoundedSemaphore(2)
+ROBOTS_NOTE = "Robots policy limited live access: "
 
 
 def domain(url):
@@ -280,12 +281,16 @@ def collect_site(http, url, screenshot=True):
     root = urljoin(resolved, "/")
     if requested and requested.status == 200 and "html" in requested.content_type:
         pages["product"] = (resolved, requested.body)
+    elif not requested and not http.allowed(url):
+        out.notes.append(ROBOTS_NOTE + url)
     else:
-        status = f"HTTP {requested.status}" if requested else "robots restriction or request failure"
+        status = f"HTTP {requested.status}" if requested else "request failure"
         out.notes.append(f"Product fetch unavailable ({status}); not evidence of discontinuation.")
     home = requested if resolved == root else http.get(root, crawl=True)
     if home and home.status == 200 and "html" in home.content_type:
         pages["home"] = (home.url, home.body)
+    elif not home and root != url and not http.allowed(root):
+        out.notes.append(ROBOTS_NOTE + root)
     raw = BeautifulSoup(requested.body, "html.parser") if requested and requested.body else None
     needs_render = not raw or not raw.body or len(raw.body.get_text(" ", strip=True)) < 220
     if screenshot or needs_render:
@@ -330,6 +335,8 @@ def collect_site(http, url, screenshot=True):
             visited[target] = http.get(target, crawl=True)
         response = visited[target]
         if not response:
+            if not http.allowed(target) and ROBOTS_NOTE + target not in out.notes:
+                out.notes.append(ROBOTS_NOTE + target)
             continue
         if response.status == 200 and "html" in response.content_type and response.url not in seen:
             seen.add(response.url)

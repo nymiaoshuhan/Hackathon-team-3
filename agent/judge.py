@@ -12,7 +12,7 @@ from urllib.parse import unquote, urlsplit
 
 import requests
 
-from vendor_site import clean, domain
+from vendor_site import ROBOTS_NOTE, clean, domain
 
 
 LABELS = ("Green", "Yellow", "Red")
@@ -538,9 +538,21 @@ def judge(url, collection, excluded_row=None, http=None, *, product_type="softwa
                 if caution:
                     existing = [r for r in verdict["reasons"] if r["severity"] == "Yellow" and r not in caution]
                     verdict["reasons"] = (caution + existing)[:3] + [r for r in verdict["reasons"] if r["severity"] != "Yellow"]
-            return verify_claims(verdict, collection.evidence, key, http), "llm", ""
+            return coverage_guard(verify_claims(verdict, collection.evidence, key, http), collection), "llm", ""
         except MODEL_ERRORS as error:
             code = error.response.status_code if isinstance(error, requests.HTTPError) and error.response is not None else type(error).__name__
-            return rules(url, collection), "rules", f"LLM verdict unavailable ({code}); used conservative local rules."
+            return coverage_guard(rules(url, collection), collection), "rules", f"LLM verdict unavailable ({code}); used conservative local rules."
     note = "No evidence gathered; used conservative local rules." if not collection.evidence else "LLM_API_KEY not set; used conservative local rules."
-    return rules(url, collection), "rules", note
+    return coverage_guard(rules(url, collection), collection), "rules", note
+
+
+def coverage_guard(verdict, collection):
+    has_site = any(item.kind in {"vendor overview", "vendor page", "release", "legal entity", "ownership claim",
+                                "certification claim", "lifecycle notice"} for item in collection.evidence)
+    has_search = any(item.kind.startswith("search excerpt:") for item in collection.evidence)
+    if verdict["overall"] == "Green" and not (has_site or has_search):
+        verdict.update(overall="Yellow", confidence=min(0.45, verdict["confidence"]),
+                       reasoning="Insufficient coverage: no live first-party product evidence or independent search results could be collected.")
+    if any(note.startswith(ROBOTS_NOTE) for note in collection.notes):
+        verdict["confidence"] = min(0.70, verdict["confidence"])
+    return verdict

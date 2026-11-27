@@ -72,15 +72,16 @@ def registration(http, url):
     return Collection(notes=[f"RDAP did not supply a registration date for {name}." + hint])
 
 
-def archive(http, url):
+def archive(http, url, *, latest=False):
     name = registrable(url)
+    target = url if latest else name + "/"
     source = ARCHIVE + "/cdx/search/cdx?" + urlencode({
-        "url": name + "/", "output": "json",
-        "filter": "statuscode:200", "fl": "timestamp,original", "limit": 1,
+        "url": target, "output": "json", "filter": "statuscode:200",
+        "fl": "timestamp,original", "limit": -1 if latest else 1,
     })
     rows = json_body(http.get(source), [])
     if not (isinstance(rows, list) and len(rows) >= 2):
-        return Collection(notes=[f"No accessible Wayback index results for {name}; archive coverage is inconclusive."])
+        return Collection(notes=[f"No accessible Wayback index results for {target if latest else name}; archive coverage is inconclusive."])
     out = Collection()
     for row in rows[1:]:
         if not isinstance(row, list) or len(row) != 2:
@@ -88,22 +89,33 @@ def archive(http, url):
         stamp, original = row
         if not isinstance(stamp, str) or not re.fullmatch(r"\d{14}", stamp) or not isinstance(original, str) or not original.startswith(("http://", "https://")):
             continue
+        if latest:
+            requested, recorded = urlsplit(target), urlsplit(original)
+            if (domain(target) != domain(original) or requested.path.rstrip("/") != recorded.path.rstrip("/")
+                    or requested.query != recorded.query):
+                continue
         link = f"{ARCHIVE}/web/{stamp}/{original}"
         date = f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}"
-        out.evidence.append(Evidence("archived page", f"Wayback indexes an HTTP 200 capture of {original} on {date}; earliest result for the queried homepage, not an incorporation date.", link))
+        scope = "latest capture for the blocked URL, not a live status check" if latest else "earliest result for the queried homepage, not an incorporation date"
+        out.evidence.append(Evidence("archived page", f"Wayback indexes an HTTP 200 capture of {original} on {date}; {scope}.", link))
         snapshot = http.get(link)
-        if snapshot and snapshot.status == 200 and "html" in snapshot.content_type:
+        if snapshot and snapshot.status == 200 and "html" in snapshot.content_type and domain(snapshot.url) == domain(ARCHIVE):
             soup = BeautifulSoup(snapshot.body, "html.parser")
             for tag in soup.select("script, style, #wm-ipp, #wm-ipp-base"):
                 tag.decompose()
             text = clean(soup.get_text(" ", strip=True), 30_000)
+            if latest and text:
+                main = soup.find("main") or soup.find("article") or soup.body or soup
+                title = soup.title.get_text(" ", strip=True) if soup.title else ""
+                excerpt = clean(f"{title} {main.get_text(' ', strip=True)}", 700)
+                out.evidence.append(Evidence("archived page excerpt", f'Wayback capture dated {date}; archived, not live: “{excerpt}”', link))
             match = re.search(r"\b\d[\d,.]*\+?\s+(?:(?:million|billion)\s+)?(?:users|clients|customers|downloads)\b", text, re.I)
             if match:
                 excerpt = clean(text[max(0, match.start()-45):match.end()+65])
                 out.evidence.append(Evidence("archived traction claim", f'Archived page text from {date}: “{excerpt}”', link))
         break
     if not out.evidence:
-        out.notes.append(f"No usable archived page link for {name}.")
+        out.notes.append(f"No usable archived page link for {target if latest else name}.")
     return out
 
 

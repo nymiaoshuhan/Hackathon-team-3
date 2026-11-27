@@ -7,19 +7,19 @@ import json
 import re
 import sys
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from dotenv import load_dotenv
 
-from batch import bounded_vendor
+from batch import bounded_vendor, unavailable
 from customers import confirm_customers
 from evidence import Collection, Http
 from judge import LABELS, judge
 from research import archive, collect_search, registration
-from vendor_site import classify_product, collect_site, domain
+from vendor_site import ROBOTS_NOTE, classify_product, collect_site, domain
 
 
 COLUMNS = ("url", "product", "vendor", "overall", "confidence", "green_flags",
@@ -52,35 +52,78 @@ def identity_hint(url):
     return " ".join(bits[-2:])[:110]
 
 
-def run_vendor(raw_url, http, *, screenshot=True, excluded_row=None, audit=False):
+def merge_collections(reports):
+    bundle = Collection()
+    archive_reports = sorted(name for name in reports if name.startswith("Wayback "))
+    for name in ("site", "RDAP", "Wayback", "web search", *archive_reports):
+        output = reports.get(name)
+        if output is None:
+            continue
+        bundle.evidence.extend(output.evidence)
+        bundle.notes.extend(output.notes)
+        bundle.screenshot = output.screenshot or bundle.screenshot
+        bundle.product = output.product or bundle.product
+        bundle.vendor = output.vendor or bundle.vendor
+    return bundle
+
+
+def result_row(url, verdict, bundle, product_type, mode, audit):
+    result = {**verdict, "url": url, "product_type": product_type, "judge_mode": mode, "coverage_notes": bundle.notes}
+    for color in LABELS:
+        result[f"{color.lower()}_flags"] = [
+            {key: value for key, value in r.items() if key != "severity"} for r in result["reasons"]
+            if r["severity"] == color
+        ]
+    if bundle.screenshot:
+        result["homepage_screenshot"] = str(bundle.screenshot)
+    if audit:
+        result["evidence"] = [asdict(item) for item in bundle.evidence]
+    return result
+
+
+def partial_result(url, bundle, product_type, audit):
+    source = next((item for item in bundle.evidence if item.kind == "vendor overview"), bundle.evidence[0])
+    verdict = unavailable(url, "Vendor research had not finished.")
+    verdict.update(product=bundle.product or identity_hint(url) or domain(url), vendor=bundle.vendor or domain(url),
+                   reasons=[{"severity": "Yellow", "claim": source.claim, "source_url": source.source_url,
+                             "verification": "direct_extraction", "quote": source.claim, "source_date": None}])
+    return result_row(url, verdict, bundle, product_type, "partial", audit)
+
+
+def run_vendor(raw_url, http, *, screenshot=True, excluded_row=None, audit=False, publish_partial=None):
     url = normalize(raw_url)
+    reports = {}
+    product_type = "unclassifiable"
     with ThreadPoolExecutor(max_workers=4) as pool:
         jobs = {
-            "site": pool.submit(collect_site, http, url, screenshot),
-            "RDAP": pool.submit(registration, http, url),
-            "Wayback": pool.submit(archive, http, url),
+            pool.submit(collect_site, http, url, screenshot): "site",
+            pool.submit(registration, http, url): "RDAP",
+            pool.submit(archive, http, url): "Wayback",
         }
-        bundle = Collection()
-        def merge(name, future):
-            try:
-                output = future.result()
-            except (ValueError, RuntimeError, OSError) as error:
-                bundle.notes.append(f"{name} collector unavailable ({type(error).__name__}).")
-                return
-            bundle.evidence.extend(output.evidence)
-            bundle.notes.extend(output.notes)
-            bundle.screenshot = output.screenshot or bundle.screenshot
-            bundle.product = output.product or bundle.product
-            bundle.vendor = output.vendor or bundle.vendor
-
-        merge("site", jobs.pop("site"))
-        product_type = classify_product(bundle.evidence)
-        identity = identity_hint(url)
-        if product_type in {"hardware", "mixed"}:
-            identity = " ".join(dict.fromkeys(filter(None, (identity, bundle.product))))[:140]
-        jobs["web search"] = pool.submit(collect_search, http, url, identity, product_type)
-        for name, future in jobs.items():
-            merge(name, future)
+        while jobs:
+            done, _ = wait(jobs, return_when=FIRST_COMPLETED)
+            for future in done:
+                name = jobs.pop(future)
+                try:
+                    output = future.result()
+                except (ValueError, RuntimeError, OSError) as error:
+                    output = Collection(notes=[f"{name} collector unavailable ({type(error).__name__})."])
+                reports[name] = output
+                if name == "site":
+                    product_type = classify_product(output.evidence)
+                    identity = identity_hint(url)
+                    if product_type in {"hardware", "mixed"}:
+                        identity = " ".join(dict.fromkeys(filter(None, (identity, output.product))))[:140]
+                    jobs[pool.submit(collect_search, http, url, identity, product_type)] = "web search"
+                    blocked = list(dict.fromkeys(note.removeprefix(ROBOTS_NOTE) for note in output.notes
+                                                 if note.startswith(ROBOTS_NOTE)))
+                    for index, target in enumerate(blocked[:2], 1):
+                        jobs[pool.submit(archive, http, target, latest=True)] = f"Wayback {index}"
+            if publish_partial:
+                snapshot = merge_collections(reports)
+                if snapshot.evidence:
+                    publish_partial(partial_result(url, snapshot, product_type, audit))
+    bundle = merge_collections(reports)
     bundle.product = bundle.product or identity_hint(url) or domain(url)
     bundle.vendor = bundle.vendor or domain(url)
     try:
@@ -102,17 +145,7 @@ def run_vendor(raw_url, http, *, screenshot=True, excluded_row=None, audit=False
                     "source_url": overview.source_url, "quote": overview.claim.partition(": ")[2],
                     "source_date": None, "verification": "direct_extraction",
                 }]
-    result = {"url": url, **result, "product_type": product_type, "judge_mode": mode, "coverage_notes": bundle.notes}
-    for color in LABELS:
-        result[f"{color.lower()}_flags"] = [
-            {key: value for key, value in r.items() if key != "severity"} for r in result["reasons"]
-            if r["severity"] == color
-        ]
-    if bundle.screenshot:
-        result["homepage_screenshot"] = str(bundle.screenshot)
-    if audit:
-        result["evidence"] = [asdict(item) for item in bundle.evidence]
-    return result
+    return result_row(url, result, bundle, product_type, mode, audit)
 
 
 def csv_cell(value):
@@ -179,8 +212,11 @@ def main():
         if not args.url:
             parser.error("worker requires one URL")
         http = Http(args.cache_dir, process_pacing=True)
-        result = run_vendor(args.url, http, screenshot=not args.no_screenshot, audit=args.evidence)
-        print(json.dumps({"result": result, "usage": http.usage_summary()}, ensure_ascii=False))
+        def publish(result):
+            print(json.dumps({"result": result, "usage": http.usage_summary()}, ensure_ascii=False), flush=True)
+
+        result = run_vendor(args.url, http, screenshot=not args.no_screenshot, audit=args.evidence, publish_partial=publish)
+        publish(result)
         return
     if args.blind:
         if args.url:
@@ -215,9 +251,9 @@ def main():
             results = [result for result, _ in pairs]
             for _, counts in pairs:
                 usage.update(counts)
-            unavailable = sum(row["judge_mode"] == "unavailable" for row in results)
-            if unavailable:
-                print(f"{unavailable} vendor(s) returned insufficient evidence. API counts exclude interrupted workers.",
+            interrupted = sum(row["judge_mode"] in {"unavailable", "partial"} for row in results)
+            if interrupted:
+                print(f"{interrupted} vendor(s) did not finish. Interrupted API counts cover only completed checkpoints.",
                       file=sys.stderr)
         if args.out:
             write_results(args.out, results)

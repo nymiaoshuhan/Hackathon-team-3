@@ -26,6 +26,24 @@ def bounded_vendor(script, url, timeout, cache_dir, screenshot, audit):
     return result, usage
 
 
+def worker_result(stdout, url, failure=""):
+    for line in reversed(stdout.split("\n")):
+        try:
+            packet = json.loads(line)
+            result, usage = packet["result"], packet["usage"]
+            partial = result["judge_mode"] == "partial"
+        except (ValueError, KeyError, TypeError):
+            continue
+        if not (partial or failure):
+            return result, usage
+        if partial:
+            detail = failure or "Vendor processing did not complete."
+            result["coverage_notes"].append(detail)
+            result["reasoning"] = f"Insufficient evidence: {detail} Review the completed source checks."
+            return result, usage
+    return unavailable(url, failure or "Vendor result could not be retrieved."), {}
+
+
 def run_worker(script, url, timeout, cache_dir, screenshot, audit):
     command = [sys.executable, str(Path(script).resolve()), "--worker-json", "--cache-dir", str(cache_dir)]
     if not screenshot:
@@ -34,7 +52,7 @@ def run_worker(script, url, timeout, cache_dir, screenshot, audit):
         command.append("--evidence")
     command.extend(["--", url])
     try:
-        with subprocess.Popen(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        with subprocess.Popen(command, encoding="utf-8", errors="replace", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               start_new_session=os.name == "posix") as worker:
             try:
                 stdout, _ = worker.communicate(timeout=timeout)
@@ -46,11 +64,8 @@ def run_worker(script, url, timeout, cache_dir, screenshot, audit):
                         pass
                 else:
                     worker.kill()
-                worker.communicate()
-                return unavailable(url, f"Vendor research exceeded the {timeout}-second time limit."), {}
-            if worker.returncode:
-                return unavailable(url, "Vendor processing did not complete."), {}
-            packet = json.loads(stdout)
-            return packet["result"], packet["usage"]
+                stdout, _ = worker.communicate()
+                return worker_result(stdout, url, f"Vendor research exceeded the {timeout}-second time limit.")
+            return worker_result(stdout, url, "Vendor processing did not complete." if worker.returncode else "")
     except (OSError, ValueError, KeyError, TypeError):
         return unavailable(url, "Vendor result could not be retrieved."), {}

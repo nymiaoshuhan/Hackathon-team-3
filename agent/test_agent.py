@@ -7,20 +7,25 @@ import unittest
 import zipfile
 from pathlib import Path
 from unittest.mock import Mock, patch
+from urllib.parse import urlencode
 
 from agent import COLUMNS, identity_hint, normalize, run_vendor, write_results
 from batch import bounded_vendor
 from customers import inspect_customer
 from evidence import Collection, Evidence, Http, Response, public_url
-from judge import documented_blocker, judge, model_request, pending_only, provider_for, purchase_caution, validate, verify_claims, vote_verdict
-from research import collect_search, corroborate_records
-from vendor_site import classify_product, collect_site, inspect_privacy_document
+from judge import coverage_guard, documented_blocker, judge, model_request, pending_only, provider_for, purchase_caution, validate, verify_claims, vote_verdict
+from research import ARCHIVE, archive, collect_search, corroborate_records
+from vendor_site import ROBOTS_NOTE, classify_product, collect_site, inspect_privacy_document
 
 
 class FixtureHttp:
-    def __init__(self, responses):
+    def __init__(self, responses, blocked=()):
         self.responses = responses
+        self.blocked = blocked
         self.visited = []
+
+    def allowed(self, url):
+        return url not in self.blocked
 
     def get(self, url, *, crawl=False, binary=False):
         self.visited.append((url, crawl))
@@ -66,6 +71,22 @@ class AgentTests(unittest.TestCase):
         self.assertIn("Insufficient evidence", result["reasoning"])
         self.assertLess(result["elapsed_seconds"], 3)
         self.assertEqual(stats, {})
+
+    def test_timed_out_worker_retains_last_complete_checkpoint(self):
+        url = "https://example.org/"
+        row = {
+            "url": url, "overall": "Yellow", "judge_mode": "partial", "coverage_notes": [],
+            "reasons": [{"claim": "Domain registered in 2003", "source_url": "https://rdap.org/domain/example.org"}],
+        }
+        packet = json.dumps({"result": row, "usage": {"tavily_estimated_credits": 2}})
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "slow_worker.py"
+            script.write_text(f"import time\nprint({packet!r}, flush=True)\nprint('{{', flush=True)\ntime.sleep(10)\n")
+            result, stats = bounded_vendor(script, url, 0.3, directory, False, True)
+        self.assertEqual(result["reasons"], row["reasons"])
+        self.assertEqual(result["judge_mode"], "partial")
+        self.assertIn("time limit", result["reasoning"])
+        self.assertEqual(stats, {"tavily_estimated_credits": 2})
 
     def test_product_identity_stays_separate_from_root(self):
         root = "https://example.org/"
@@ -127,6 +148,37 @@ class AgentTests(unittest.TestCase):
         self.assertEqual((result["product_type"], result["overall"]), ("non-product", "Yellow"))
         self.assertEqual(result["yellow_flags"][0]["source_url"], url)
         self.assertTrue(any("purchasable product" in note for note in result["coverage_notes"]))
+
+    @patch("vendor_site.render", return_value=("", "", None, ""))
+    @patch.dict("os.environ", {}, clear=True)
+    def test_robots_block_uses_latest_exact_page_capture_without_live_citation(self, render):
+        url = "https://example.org/product"
+        stamp = "20240101000000"
+        cdx = ARCHIVE + "/cdx/search/cdx?" + urlencode({
+            "url": url, "output": "json", "filter": "statuscode:200", "fl": "timestamp,original", "limit": -1,
+        })
+        link = f"{ARCHIVE}/web/{stamp}/{url}"
+        http = FixtureHttp({
+            cdx: Response(cdx, 200, "application/json", json.dumps([["timestamp", "original"], [stamp, url]])),
+            link: Response(link, 200, "text/html", "<main>A snapshot of the product page.</main>"),
+        }, blocked={url})
+        with patch("agent.registration", return_value=Collection()):
+            result = run_vendor(url, http, screenshot=False, audit=True)
+        self.assertTrue(any(note == ROBOTS_NOTE + url for note in result["coverage_notes"]))
+        excerpts = [item for item in result["evidence"] if item["kind"] == "archived page excerpt"]
+        self.assertEqual(excerpts[0]["source_url"], link)
+        self.assertIn("archived, not live", excerpts[0]["claim"])
+        self.assertEqual(result["overall"], "Yellow")
+        self.assertIn((link, False), http.visited)
+
+    def test_coverage_cap_does_not_treat_empty_search_as_negative_evidence(self):
+        verdict = {"overall": "Green", "confidence": 0.9, "reasons": []}
+        url = "https://example.org/"
+        notes = [ROBOTS_NOTE + url]
+        self.assertEqual(coverage_guard(dict(verdict), Collection(notes=notes))["overall"], "Yellow")
+        search = Evidence("search excerpt: lifecycle", "Reports version 4.1", "https://independent.example")
+        guarded = coverage_guard(dict(verdict), Collection([search], notes=notes))
+        self.assertEqual((guarded["overall"], guarded["confidence"]), ("Green", 0.70))
 
     def test_model_grounding_drops_unknown_link_and_out_of_range_id(self):
         url = "https://example.org/releases"
