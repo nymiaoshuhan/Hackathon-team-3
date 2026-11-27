@@ -1,6 +1,10 @@
 # Team comparison — November 27, 2026
 
-The locked pipeline matched **27/40 (67.5%)**. Development variants scored **52.5–75.0%**, including **30/40 (75.0%)** immediately before voting and excerpt verification. Always guessing Yellow scores **16/40 (40%)**. With only 40 rows, a rough sampling margin is about **±15 percentage points** near these scores. Similar products produce correlated errors, and the rubric was learned from the same 40 rows. Excluding the matching few-shot example does not make this a held-out benchmark; expect this evaluation to be optimistic.
+The locked pipeline (`6297199`) and the updated pipeline (`f5549f7`) each matched **27/40 (67.5%)**, with **zero Red → Green and zero Green → Red errors**. We kept the updated version for its hardware support, coverage fallbacks, and partial verdicts on timeout.
+
+Development variants scored **52.5–75.0%**, including **30/40 (75.0%)** immediately before voting and excerpt verification. Always guessing Yellow scores **16/40 (40%)**. With only 40 rows, a rough sampling margin is about **±15 percentage points** near these scores. Similar products produce correlated errors, and the rubric was learned from the same 40 rows. Excluding the matching few-shot example does not make this a held-out benchmark; expect this evaluation to be optimistic.
+
+## Locked pipeline
 
 | Expected ↓ / predicted → | Green | Yellow | Red |
 | --- | ---: | ---: | ---: |
@@ -16,6 +20,16 @@ The locked pipeline matched **27/40 (67.5%)**. Development variants scored **52.
 | 9, 31 | Yellow → Green | Autodesk Fusion, Schneespur |
 | 4, 11, 21, 35 | Red → Yellow | PimEyes, Knooing, Tipard PDF to Word Converter, Prayer Platform |
 
+## Updated pipeline
+
+| Expected ↓ / predicted → | Green | Yellow | Red |
+| --- | ---: | ---: | ---: |
+| Green | 6 | 8 | 0 |
+| Yellow | 1 | 15 | 0 |
+| Red | 0 | 4 | 6 |
+
+Only two predictions changed. Autodesk Fusion (row 9, labeled Yellow) moved from Green to Yellow, correcting a miss. IrfanView (row 39, labeled Green) moved from Green to Yellow, adding a miss. All ten labeled Red rows kept the same verdict.
+
 ## Five unseen submission rows
 
 | Product | Verdict | Worker seconds |
@@ -30,7 +44,8 @@ All five domains were outside the labeled CSV. The batch finished in **7.48 s** 
 
 ## Cost and reproduction
 
-- **40 rows:** 0 new Tavily credits (375 cache hits); 120 new Nebius requests (40 cached), 761,124 input and 76,824 output tokens, approximately **$0.16** at list pricing. A fully cold run uses up to 400 basic Tavily searches and up to 160 Nebius requests; this run did not measure that cold cost.
+- **Locked, 40 rows:** 0 new Tavily credits (375 cache hits); 120 new Nebius requests (40 cached), 761,124 input and 76,824 output tokens, approximately **$0.16** at list pricing.
+- **Updated, 40 rows:** 9 new Tavily credits (366 cache hits); 44 new Nebius requests (116 cached), 306,148 input and 27,647 output tokens, approximately **$0.063**. A 150-uncached-search guard made no substitutions and skipped no searches. The measured cost reflects a shared warm cache, not cheaper cold judging. A fully cold run uses up to 400 basic Tavily searches and up to 160 Nebius requests.
 - **Five rows:** 0 new Tavily credits (47 cache hits); 15 new Nebius requests (five cached), 94,148 input and 9,011 output tokens, approximately **$0.02**. The initial pre-lock dry run used 47 Tavily credits.
 
 From `agent/`, with Tavily and Nebius keys configured, and `CACHE_DIR` pointing to the persistent cache (the comparison used `/home/ubuntu/repos/hackathon/cache`):
@@ -41,4 +56,4 @@ CHROME_CDP_URL=http://localhost:29229 python eval.py --workers 8 --no-screenshot
 CHROME_CDP_URL=http://localhost:29229 /usr/bin/time -f 'Wall clock: %e s' python agent.py --blind --input examples/dry_run_urls.txt --out examples/dry_run_verdicts.csv --audit-out examples/dry_run_verdicts.json --workers 5 --cache-dir "$CACHE_DIR"
 ```
 
-The CDP setting can be omitted when using a local Playwright Chromium install. The two dry-run outputs are checked in under [examples/](examples/).
+To reproduce the updated 40-row run, use commit `f5549f7` with the same evaluation command and `--out "$CACHE_DIR/eval-results-tip.json"`. The capped launcher used for this measurement was external to the CLI; the command above does not enforce a credit cap. The CDP setting can be omitted when using a local Playwright Chromium install. The locked dry-run outputs are checked in under [examples/](examples/).
