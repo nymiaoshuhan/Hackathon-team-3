@@ -40,9 +40,9 @@ The models within a comparison run got the same collected evidence. Evidence cap
 
 Costs are estimated from [Nebius list prices](https://tokenfactory.nebius.com/model-catalog.md), before provider-side caching discounts. Failed requests may not report usage. High fallback rates make these reliability results for the current pipeline, not a pure comparison of model intelligence. The Flash variant gained three matches but recovered no additional Greens; GPT-OSS remains the default. Of its 11 Green → Yellow results, seven were voted Yellow; the other four had a Green majority but no fully supported Green flag survived. Both judgment and claim verification are worth investigating.
 
-#### Remaining probe
+#### Stopped probe
 
-`deepseek-ai/DeepSeek-V4-Pro-0813` is running on the captured evidence; accuracy, cost, and latency are pending. `moonshotai/Kimi-K3.1-Pro` responded in a one-call probe but was not selected for the full run. The tested Qwen ID (`Qwen/Qwen3.5-397B-A17B`) returned 404. No other full model runs are queued.
+The `deepseek-ai/DeepSeek-V4-Pro-0813` run was stopped before it produced a complete evaluation. It has no comparable accuracy, cost, or latency result; we cannot say it would have scored better or worse. `moonshotai/Kimi-K3.1-Pro` responded in a one-call probe but was not evaluated on the 40 rows. The tested Qwen ID (`Qwen/Qwen3.5-397B-A17B`) returned 404. No further runs are planned, and `openai/gpt-oss-120b` remains the default.
 
 ### Code experiments (not shipped)
 
