@@ -1,7 +1,10 @@
+import base64
 import csv
+import io
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -9,9 +12,9 @@ from agent import COLUMNS, identity_hint, normalize, run_vendor, write_results
 from batch import bounded_vendor
 from customers import inspect_customer
 from evidence import Collection, Evidence, Http, Response, public_url
-from judge import documented_blocker, judge, model_request, provider_for, purchase_caution, validate
+from judge import documented_blocker, judge, model_request, pending_only, provider_for, purchase_caution, validate, verify_claims, vote_verdict
 from research import corroborate_records
-from vendor_site import collect_site
+from vendor_site import collect_site, inspect_privacy_document
 
 
 class FixtureHttp:
@@ -19,12 +22,40 @@ class FixtureHttp:
         self.responses = responses
         self.visited = []
 
-    def get(self, url, *, crawl=False):
+    def get(self, url, *, crawl=False, binary=False):
         self.visited.append((url, crawl))
         return self.responses.get(url)
 
 
 class AgentTests(unittest.TestCase):
+    def test_privacy_document_gap_reaches_regulated_product_verdict(self):
+        url = "https://example.org/privacy.docx"
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as bundle:
+            bundle.writestr("word/document.xml", '<doc xmlns:w="urn:word"><w:t>Account FAQ</w:t>'
+                            '<w:t>' + "A password reset is available by email. " * 35 + '</w:t></doc>')
+        http = FixtureHttp({url: Response(url, 200, "application/zip", base64.b64encode(stream.getvalue()).decode())})
+        collection = Collection()
+        inspect_privacy_document(http, collection, url)
+        self.assertEqual(collection.evidence[0].kind, "inspected privacy artifact gap")
+        self.assertEqual(documented_blocker("https://example.org", collection), ([], ""))
+        collection.evidence.append(Evidence("vendor overview", "A tool for financial institutions.", "https://example.org"))
+        reasons, _ = documented_blocker("https://example.org", collection)
+        self.assertEqual((reasons[0]["severity"], reasons[0]["source_url"]), ("Red", url))
+
+    def test_pending_litigation_is_not_a_final_action(self):
+        source = "https://example.org/complaint"
+        verdict = {"reasons": [{"severity": "Red", "source_url": source, "claim": "Lawsuit filed"}]}
+        self.assertTrue(pending_only(verdict, [Evidence("search excerpt: enforcement", "Agency alleges violations", source)]))
+        self.assertFalse(pending_only(verdict, [Evidence("search excerpt: enforcement", "Agency complaint resolved by final order", source)]))
+        evidence = [
+            Evidence("search excerpt: enforcement", "Agency alleges violations", source),
+            Evidence("search excerpt: enforcement", "FTC order requires Example to pay.", "https://www.ftc.gov/news"),
+            Evidence("search excerpt: enforcement", "Example agreed to pay $7 to settle the complaint.", "https://legal.example/updates"),
+        ]
+        self.assertFalse(pending_only(verdict, evidence, "https://example.org"))
+        self.assertTrue(pending_only(verdict, evidence, "https://unrelated.org"))
+
     def test_timed_out_worker_returns_yellow_without_evidence(self):
         url = "https://example.org/"
         with tempfile.TemporaryDirectory() as directory:
@@ -75,16 +106,77 @@ class AgentTests(unittest.TestCase):
     @patch.dict("os.environ", {"LLM_API_KEY": "test-key"}, clear=True)
     @patch("judge.model_request")
     def test_held_out_row_does_not_appear_as_example(self, request):
-        request.return_value = {"overall": "Green", "reasons": [
+        verdict = {"overall": "Green", "reasons": [
             {"severity": "Green", "claim": "Published release", "evidence_id": 1},
         ]}
+        request.side_effect = lambda *args, **kwargs: (
+            {"checks": [{"id": 1, "status": "yes", "quote": "Version 4.1"}]}
+            if "system" in kwargs else verdict
+        )
         source = "https://example.org/release"
         result, mode, _ = judge(source, Collection([Evidence("release", "Version 4.1", source)]), "15")
-        payload = json.loads(request.call_args.args[1])
+        payload = json.loads(request.call_args_list[0].args[1])
         self.assertEqual(mode, "llm")
         self.assertEqual(len(payload["examples"]), 5)
         self.assertNotIn("old-looking open-source", json.dumps(payload["examples"]))
         self.assertEqual(result["reasons"][0]["source_url"], source)
+
+    @patch("judge.model_request")
+    def test_majority_vote_selects_a_valid_representative(self, request):
+        source = "https://example.org/release"
+        evidence = [Evidence("release", "Version 4.1", source)]
+        colors = ["Yellow", "Green", "Green"]
+        request.side_effect = lambda *args, sample, **kwargs: {
+            "overall": colors[sample],
+            "reasons": [{"severity": colors[sample], "claim": "Published release", "evidence_id": 1}],
+        }
+        result = vote_verdict("test-key", "payload", None, None, evidence, Collection(evidence))
+        self.assertEqual(result["overall"], "Green")
+        self.assertEqual(result["judge_votes"], colors)
+        colors[2] = "Red"
+        result = vote_verdict("test-key", "payload", None, None, evidence, Collection(evidence))
+        self.assertEqual(result["overall"], "Yellow")
+
+    @patch("judge.model_request")
+    def test_claim_check_drops_unsupported_and_softens_partial_claims(self, request):
+        source = "https://example.org/release"
+        request.return_value = {"checks": [
+            {"id": 1, "status": "no"},
+            {"id": 2, "status": "partial", "quote": "Version 4.1", "source_date": "2025-02-01"},
+            {"id": 3, "status": "yes", "quote": "not in source"},
+        ]}
+        verdict = {"overall": "Red", "confidence": 0.92, "reasons": [
+            {"severity": "Red", "claim": "Ends support today.", "source_url": source},
+            {"severity": "Green", "claim": "Version 4.1 guarantees support.", "source_url": source},
+            {"severity": "Red", "claim": "Vendor closed.", "source_url": source},
+        ]}
+        evidence = [Evidence("release", "Version 4.1. Published 2025-02-01.", source)]
+        result = verify_claims(verdict, evidence, "test-key", None)
+        self.assertEqual(result["overall"], "Yellow")
+        self.assertEqual([row["status"] for row in result["claim_verification"]], ["no", "partial", "unverified"])
+        self.assertEqual(result["reasons"][0]["claim"], "Source reports: “Version 4.1”")
+        self.assertEqual(result["reasons"][0]["source_date"], "2025-02-01")
+
+    @patch.dict("os.environ", {"LLM_API_KEY": "test-key"}, clear=True)
+    @patch("judge.model_request")
+    def test_sourced_purchase_caution_does_not_override_green(self, request):
+        url = "https://example.org/"
+        evidence = [
+            Evidence("release", "Version 4.1", url),
+            Evidence("ownership claim", "Product formerly known as Old Tool.", url),
+        ]
+        request.side_effect = lambda *args, **kwargs: ({
+            "checks": [
+                {"id": 1, "status": "yes", "quote": "formerly known as Old Tool"},
+                {"id": 2, "status": "yes", "quote": "Version 4.1"},
+            ],
+        } if "system" in kwargs else {
+            "overall": "Green",
+            "reasons": [{"severity": "Green", "claim": "Version 4.1", "evidence_id": 1}],
+        })
+        result, _, _ = judge(url, Collection(evidence))
+        self.assertEqual(result["overall"], "Green")
+        self.assertEqual([reason["severity"] for reason in result["reasons"]], ["Yellow", "Green"])
 
     @patch.dict("os.environ", {}, clear=True)
     def test_keyless_batch_contract(self):

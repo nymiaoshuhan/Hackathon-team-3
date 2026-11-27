@@ -1,5 +1,6 @@
 """Evidence types, bounded public HTTP, and a shared disk cache."""
 
+import base64
 import hashlib
 import ipaddress
 import json
@@ -177,11 +178,12 @@ class Http:
                 self.robots[origin] = parser
         return self.robots[origin].can_fetch(USER_AGENT, url)
 
-    def get(self, url, *, crawl=False):
-        return self.request(url, crawl=crawl)
+    def get(self, url, *, crawl=False, binary=False):
+        return self.request(url, crawl=crawl, binary=binary)
 
-    def request(self, url, *, crawl=False, payload=None, headers=None, tavily=False):
-        path = self.path("http", json.dumps([url, payload, crawl], sort_keys=True))
+    def request(self, url, *, crawl=False, payload=None, headers=None, tavily=False, binary=False):
+        cache_key = [url, payload, crawl] + (["binary"] if binary else [])
+        path = self.path("http", json.dumps(cache_key, sort_keys=True))
         cached = self.read(path)
         if isinstance(cached, dict) and (not crawl or (
             public_url(url) and self.allowed(url) and self.allowed(cached["url"])
@@ -206,14 +208,15 @@ class Http:
                         continue
                     content_type = result.headers.get("Content-Type", "").lower()
                     body = bytearray()
-                    if any(kind in content_type for kind in ("text", "json", "xml", "xhtml")):
+                    if binary or any(kind in content_type for kind in ("text", "json", "xml", "xhtml")):
                         for chunk in result.iter_content(16384):
                             body.extend(chunk)
                             if len(body) >= MAX_BYTES:
                                 break
                     encoding = result.encoding or "utf-8"
-                    response = Response(result.url, result.status_code, content_type,
-                                        body[:MAX_BYTES].decode(encoding, errors="replace"))
+                    content = (base64.b64encode(body).decode("ascii") if binary and len(body) < MAX_BYTES else ""
+                               if binary else body[:MAX_BYTES].decode(encoding, errors="replace"))
+                    response = Response(result.url, result.status_code, content_type, content)
                     if tavily:
                         self.count(**({"tavily_credits": 1} if result.ok else {"tavily_failed_requests": 1}))
                     if result.status_code == 200 or (not tavily and result.status_code in {404, 410}):

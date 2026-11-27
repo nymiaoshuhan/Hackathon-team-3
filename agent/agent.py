@@ -87,7 +87,7 @@ def run_vendor(raw_url, http, *, screenshot=True, excluded_row=None, audit=False
     result = {"url": url, **result, "judge_mode": mode, "coverage_notes": bundle.notes}
     for color in LABELS:
         result[f"{color.lower()}_flags"] = [
-            {"claim": r["claim"], "source_url": r["source_url"]} for r in result["reasons"]
+            {key: value for key, value in r.items() if key != "severity"} for r in result["reasons"]
             if r["severity"] == color
         ]
     if bundle.screenshot:

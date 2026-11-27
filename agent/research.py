@@ -3,7 +3,7 @@
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, urlencode, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
@@ -147,6 +147,32 @@ def github(http, evidence):
     return []
 
 
+def official_docket(http, source, soup, subject):
+    if domain(source) != "ftc.gov":
+        return None
+    for link in soup.find_all("a", href=True):
+        label = clean(link.get_text(" ", strip=True))
+        target = urljoin(source, link["href"])
+        if (not subject.search(label) or domain(target) != "ftc.gov"
+                or not re.fullmatch(r"/legal-library/browse/cases-proceedings/[a-z\d-]+/?", urlsplit(target).path)):
+            continue
+        response = http.get(target, crawl=True)
+        if not response or response.status != 200 or domain(response.url) != "ftc.gov":
+            return None
+        docket = BeautifulSoup(response.body, "html.parser")
+        title = docket.find("h1")
+        title = clean(title.get_text(" ", strip=True)) if title else ""
+        if subject.search(title) and any(
+            re.search(r"\bfinal (?:decision and )?order\b", anchor.get_text(" ", strip=True), re.I)
+            for anchor in docket.find_all("a", href=True)
+        ):
+            return Evidence("official final enforcement docket",
+                            f'The FTC docket “{title}” lists a final order, not just a proposed order. Read the docket for its scope and terms.',
+                            response.url)
+        return None
+    return None
+
+
 def corroborate_records(http, name, items):
     subject = name.split(".")[0].replace("-", " ")
     if len(subject) < 4:
@@ -163,6 +189,9 @@ def corroborate_records(http, name, items):
         if not (page and page.status == 200 and "html" in page.content_type):
             continue
         soup = BeautifulSoup(page.body, "html.parser")
+        docket = official_docket(http, page.url, soup, pattern)
+        if docket and docket not in result:
+            result.append(docket)
         scope = soup.find("main") or soup.find("article") or soup
         blocks = [
             clean(tag.get_text(" ", strip=True), 1100)

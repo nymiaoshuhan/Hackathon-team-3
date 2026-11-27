@@ -1,8 +1,12 @@
 """Collect vendor-published evidence without treating marketing as fact."""
 
+import base64
+import io
 import os
 import re
 import threading
+import xml.etree.ElementTree as ET
+import zipfile
 from urllib.parse import urldefrag, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
@@ -65,6 +69,28 @@ def emit(out, kind, claim, url):
     evidence = Evidence(kind, claim, url)
     if evidence not in out.evidence:
         out.evidence.append(evidence)
+
+
+def inspect_privacy_document(http, out, url):
+    response = http.get(url, crawl=True, binary=True)
+    if not response or response.status != 200 or not response.body:
+        return
+    try:
+        with zipfile.ZipFile(io.BytesIO(base64.b64decode(response.body))) as archive:
+            entry = archive.getinfo("word/document.xml")
+            if entry.file_size > 600_000:
+                return
+            contents = ET.fromstring(archive.read(entry))
+    except (ValueError, KeyError, OSError, zipfile.BadZipFile, ET.ParseError):
+        return
+    parts = [node.text for node in contents.iter() if node.tag.endswith("}t") and node.text]
+    text = " ".join(parts)
+    if (len(text) >= 1000 and re.search(r"\b(?:password|sign.in|login|credentials)\b", text, re.I)
+            and not re.search(r"\b(?:data controller|data subjects?|privacy policy|privacy notice|right to (?:access|rectification|object)|personal data)\b", text, re.I)):
+        title = clean(parts[0], 100)
+        emit(out, "inspected privacy artifact gap",
+             f'The linked Word document opens with “{title}” and describes account or password handling; text extraction found no privacy-notice, data-controller or data-subject-rights wording. This check covers this document only.',
+             response.url)
 
 
 def extract(out, soup, url, purpose):
@@ -265,6 +291,9 @@ def collect_site(http, url, screenshot=True):
     visited = {}
     broken = 0
     for purpose, (target, parent, label) in candidates.items():
+        if purpose == "privacy" and urlsplit(target).path.lower().endswith(".docx"):
+            inspect_privacy_document(http, out, target)
+            continue
         if target not in visited:
             visited[target] = http.get(target, crawl=True)
         response = visited[target]
