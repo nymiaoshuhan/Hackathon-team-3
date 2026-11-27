@@ -30,6 +30,28 @@ Development variants scored **52.5–75.0%**, including **30/40 (75.0%)** immedi
 
 Only two predictions changed. Autodesk Fusion (row 9, labeled Yellow) moved from Green to Yellow, correcting a miss. IrfanView (row 39, labeled Green) moved from Green to Yellow, adding a miss. All ten labeled Red rows kept the same verdict.
 
+## Judge-only Nebius comparison
+
+For the model comparison, capture each row's evidence once with screenshots off, then swap only the judge and verifier model. The capture reused **375 Tavily responses and spent 0 new credits**. It rejected uncached Tavily requests rather than buying new results. This controls the evidence within the comparison, not against the earlier 67.5% result: live sources, collection coverage, and cached responses can differ across runs. Use the judge-only baseline in the table, not 67.5%, to compare models.
+
+| Model | Accuracy | LLM / rules rows | Wall, median, p95 | Reported input / output tokens | Estimated cost |
+| --- | ---: | ---: | --- | --- | ---: |
+| `openai/gpt-oss-120b` | 22/40 (55.0%) | 40 / 0 | 31.64 s, 5.69 s, 7.28 s | 1,130,416 / 101,425 | $0.23 |
+| `deepseek-ai/DeepSeek-V4.1-Flash-1017-fast` | 25/40 (62.5%) | 29 / 11 | 92.57 s, 16.31 s, 25.89 s | 1,090,597 / 390,461 | $1.59 |
+| `zai-org/GLM-5.3` | 20/40 (50.0%) | 13 / 27 | 243.02 s, 41.80 s, 62.97 s | 1,112,576 / 432,863 | $3.46 |
+
+Each matrix below lists the predicted Green / Yellow / Red counts for each expected color. None of these runs had a Red → Green or Green → Red error.
+
+| Model | Expected Green | Expected Yellow | Expected Red |
+| --- | --- | --- | --- |
+| GPT-OSS | 3 / 11 / 0 | 2 / 14 / 0 | 0 / 5 / 5 |
+| DeepSeek Flash Fast | 3 / 11 / 0 | 0 / 16 / 0 | 0 / 4 / 6 |
+| GLM-5.3 | 0 / 14 / 0 | 0 / 15 / 1 | 0 / 5 / 5 |
+
+These are judge timings for 40 rows with eight workers, excluding evidence collection, not full blind-batch timings. Cost estimates apply [Nebius list prices](https://tokenfactory.nebius.com/model-catalog.md) to reported usage before provider-side cache discounts; failed requests may not return usage. The Flash variant did not recover any additional Greens, needed a rules fallback on 11 rows, and cost more. GLM needed the rules fallback on 27 rows, even though its one-call probe had responded fastest. Neither result justifies switching the live default. In the GPT-OSS audit, seven of the eleven missed Greens were voted Yellow before verification. Four had Green majorities but no fully supported Green claim survived. Both initial judgment and evidence verification contribute to the Yellow bias.
+
+Two code experiments also did not justify a live change. Appending localized and generic keywords directly to existing risk queries, together with a material-quote exception in verification, scored **25/40** (44 new Tavily credits) and introduced one Red → Green error. The affected row had three Green votes, so a verifier exception that only applies to Red votes could not have caused that verdict. Retaining the original enforcement query, moving localized terms to a separate query within the same budget, and adding guidance for maintained, established products removed the Red → Green error, but scored **24/40** (4 new Tavily credits, no Red ↔ Green errors); Red recall fell from **6/10 to 3/10** versus the updated pipeline. These were bundled experiments, not per-feature ablations, and are not in the live branch.
+
 ## Five unseen submission rows
 
 | Product | Verdict | Worker seconds |
