@@ -6,6 +6,8 @@ The URL, reference label, rationale and public source for each case were committ
 
 **14/20 (70%)**, with **0 Red → Green and 0 Green → Red** errors. All 20 rows completed in model mode; CSV and JSON agreed on every URL and verdict. References are procurement judgments for the named product and use—not labels for every product a vendor sells.
 
+Run outputs: [verdicts CSV](holdout_verdicts.csv) and [evidence audit JSON](holdout_verdicts.json).
+
 | Reference ↓ / predicted → | Green | Yellow | Red |
 | --- | ---: | ---: | ---: |
 | Green | 5 | 1 | 0 |
