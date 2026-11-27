@@ -7,7 +7,7 @@ import { api } from './api.js';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const dist = resolve(root, 'dist');
 const port = Number(process.env.PORT || 4173);
-const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png' };
+const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.woff': 'font/woff', '.png': 'image/png', '.webp': 'image/webp' };
 
 async function serveBuild(req, res) {
   try {
