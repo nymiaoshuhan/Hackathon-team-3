@@ -37,12 +37,13 @@ The models within a comparison run got the same collected evidence. Evidence cap
 | `openai/gpt-oss-120b` | 22/40 (55.0%) | 40 / 0 | 0 / 0 | 31.64 / 5.69 / 7.28 s | 1,130,416 / 101,425 | $0.23 |
 | `deepseek-ai/DeepSeek-V4.1-Flash-1017-fast` | 25/40 (62.5%) | 29 / 11 | 0 / 0 | 92.57 / 16.31 / 25.89 s | 1,090,597 / 390,461 | $1.59 |
 | `zai-org/GLM-5.3` | 20/40 (50.0%) | 13 / 27 | 0 / 0 | 243.02 / 41.80 / 62.97 s | 1,112,576 / 432,863 | $3.46 |
+| `moonshotai/Kimi-K3.1-Pro` | 24/40 (60.0%) | 11 / 29 | 0 / 0 | 301.70 / 55.61 / 111.06 s | 166,266 / 49,559 | $0.83 |
 
-Costs are estimated from [Nebius list prices](https://tokenfactory.nebius.com/model-catalog.md), before provider-side caching discounts. Failed requests may not report usage. High fallback rates make these reliability results for the current pipeline, not a pure comparison of model intelligence. The Flash variant gained three matches but recovered no additional Greens; GPT-OSS remains the default. Of its 11 Green → Yellow results, seven were voted Yellow; the other four had a Green majority but no fully supported Green flag survived. Both judgment and claim verification are worth investigating.
+Costs are estimated from [Nebius list prices](https://tokenfactory.nebius.com/model-catalog.md), before provider-side caching discounts. Failed requests may not report usage. High fallback rates make these reliability results for the current pipeline, not a pure comparison of model intelligence. The Flash variant gained three matches but recovered no additional Greens. Kimi gained two matches but fell back to rules on 29 rows and had a 111-second judge-only p95, which leaves little room for evidence collection under the 150-second blind timeout. GPT-OSS remains the default. Of its 11 Green → Yellow results, seven were voted Yellow; the other four had a Green majority but no fully supported Green flag survived. Both judgment and claim verification are worth investigating.
 
-#### Stopped probe
+#### Stopped or unavailable models
 
-The `deepseek-ai/DeepSeek-V4-Pro-0813` run was stopped before it produced a complete evaluation. It has no comparable accuracy, cost, or latency result; we cannot say it would have scored better or worse. `moonshotai/Kimi-K3.1-Pro` responded in a one-call probe but was not evaluated on the 40 rows. The tested Qwen ID (`Qwen/Qwen3.5-397B-A17B`) returned 404. No further runs are planned, and `openai/gpt-oss-120b` remains the default.
+The `deepseek-ai/DeepSeek-V4-Pro-0813` run was stopped before it produced a complete evaluation. It has no comparable accuracy, cost, or latency result; we cannot say it would have scored better or worse. The requested Qwen ID (`Qwen/Qwen3.5-397B-A17B`) returned 404 and was absent from the authenticated Nebius catalog on recheck. Other Qwen models are listed but are not the requested model, so no Qwen benchmark was run.
 
 ### Code experiments (not shipped)
 

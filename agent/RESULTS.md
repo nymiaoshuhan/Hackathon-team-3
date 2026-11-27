@@ -39,6 +39,7 @@ For the model comparison, capture each row's evidence once with screenshots off,
 | `openai/gpt-oss-120b` | 22/40 (55.0%) | 40 / 0 | 31.64 s, 5.69 s, 7.28 s | 1,130,416 / 101,425 | $0.23 |
 | `deepseek-ai/DeepSeek-V4.1-Flash-1017-fast` | 25/40 (62.5%) | 29 / 11 | 92.57 s, 16.31 s, 25.89 s | 1,090,597 / 390,461 | $1.59 |
 | `zai-org/GLM-5.3` | 20/40 (50.0%) | 13 / 27 | 243.02 s, 41.80 s, 62.97 s | 1,112,576 / 432,863 | $3.46 |
+| `moonshotai/Kimi-K3.1-Pro` | 24/40 (60.0%) | 11 / 29 | 301.70 s, 55.61 s, 111.06 s | 166,266 / 49,559 | $0.83 |
 
 Each matrix below lists the predicted Green / Yellow / Red counts for each expected color. None of these runs had a Red → Green or Green → Red error.
 
@@ -47,10 +48,13 @@ Each matrix below lists the predicted Green / Yellow / Red counts for each expec
 | GPT-OSS | 3 / 11 / 0 | 2 / 14 / 0 | 0 / 5 / 5 |
 | DeepSeek Flash Fast | 3 / 11 / 0 | 0 / 16 / 0 | 0 / 4 / 6 |
 | GLM-5.3 | 0 / 14 / 0 | 0 / 15 / 1 | 0 / 5 / 5 |
+| Kimi-K3.1-Pro | 2 / 12 / 0 | 0 / 16 / 0 | 0 / 4 / 6 |
 
 These are judge timings for 40 rows with eight workers, excluding evidence collection, not full blind-batch timings. Cost estimates apply [Nebius list prices](https://tokenfactory.nebius.com/model-catalog.md) to reported usage before provider-side cache discounts; failed requests may not return usage. The Flash variant did not recover any additional Greens, needed a rules fallback on 11 rows, and cost more. GLM needed the rules fallback on 27 rows, even though its one-call probe had responded fastest. Neither result justifies switching the live default. In the GPT-OSS audit, seven of the eleven missed Greens were voted Yellow before verification. Four had Green majorities but no fully supported Green claim survived. Both initial judgment and evidence verification contribute to the Yellow bias.
 
-The `deepseek-ai/DeepSeek-V4-Pro-0813` run was stopped before completion and is not evaluated here. No Kimi or Qwen full run was performed. `openai/gpt-oss-120b` remains the default.
+Kimi's run reused 375 Tavily responses (0 new credits). GPT-OSS judged the same capture with 160 model cache hits, 0 new calls, and the same 22/40 result; the table uses earlier cold model timings for that baseline. Kimi gained two matches, but 29 rows fell back to rules and its judge-only p95 was 111 seconds. That leaves little room under the 150-second per-vendor blind timeout for evidence collection. `openai/gpt-oss-120b` remains the default.
+
+The `deepseek-ai/DeepSeek-V4-Pro-0813` run was stopped before completion. `Qwen/Qwen3.5-397B-A17B` previously returned 404 and was absent from the authenticated Nebius model list on recheck, so it was not benchmarked.
 
 Two code experiments also did not justify a live change. Appending localized and generic keywords directly to existing risk queries, together with a material-quote exception in verification, scored **25/40** (44 new Tavily credits) and introduced one Red → Green error. The affected row had three Green votes, so a verifier exception that only applies to Red votes could not have caused that verdict. Retaining the original enforcement query, moving localized terms to a separate query within the same budget, and adding guidance for maintained, established products removed the Red → Green error, but scored **24/40** (4 new Tavily credits, no Red ↔ Green errors); Red recall fell from **6/10 to 3/10** versus the updated pipeline. These were bundled experiments, not per-feature ablations, and are not in the live branch.
 
