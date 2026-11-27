@@ -19,7 +19,7 @@ from customers import confirm_customers
 from evidence import Collection, Http
 from judge import LABELS, judge
 from research import archive, collect_search, registration
-from vendor_site import collect_site, domain
+from vendor_site import classify_product, collect_site, domain
 
 
 COLUMNS = ("url", "product", "vendor", "overall", "confidence", "green_flags",
@@ -59,20 +59,28 @@ def run_vendor(raw_url, http, *, screenshot=True, excluded_row=None, audit=False
             "site": pool.submit(collect_site, http, url, screenshot),
             "RDAP": pool.submit(registration, http, url),
             "Wayback": pool.submit(archive, http, url),
-            "web search": pool.submit(collect_search, http, url, identity_hint(url)),
         }
         bundle = Collection()
-        for name, future in jobs.items():
+        def merge(name, future):
             try:
                 output = future.result()
             except (ValueError, RuntimeError, OSError) as error:
                 bundle.notes.append(f"{name} collector unavailable ({type(error).__name__}).")
-                continue
+                return
             bundle.evidence.extend(output.evidence)
             bundle.notes.extend(output.notes)
             bundle.screenshot = output.screenshot or bundle.screenshot
             bundle.product = output.product or bundle.product
             bundle.vendor = output.vendor or bundle.vendor
+
+        merge("site", jobs.pop("site"))
+        product_type = classify_product(bundle.evidence)
+        identity = identity_hint(url)
+        if product_type in {"hardware", "mixed"}:
+            identity = " ".join(dict.fromkeys(filter(None, (identity, bundle.product))))[:140]
+        jobs["web search"] = pool.submit(collect_search, http, url, identity, product_type)
+        for name, future in jobs.items():
+            merge(name, future)
     bundle.product = bundle.product or identity_hint(url) or domain(url)
     bundle.vendor = bundle.vendor or domain(url)
     try:
@@ -81,10 +89,20 @@ def run_vendor(raw_url, http, *, screenshot=True, excluded_row=None, audit=False
         bundle.notes.extend(customers.notes)
     except (ValueError, RuntimeError, OSError) as error:
         bundle.notes.append(f"Customer verification unavailable ({type(error).__name__}).")
-    result, mode, note = judge(url, bundle, excluded_row, http)
+    result, mode, note = judge(url, bundle, excluded_row, http, product_type=product_type)
     if note:
         bundle.notes.append(note)
-    result = {"url": url, **result, "judge_mode": mode, "coverage_notes": bundle.notes}
+    if product_type in {"non-product", "unclassifiable"}:
+        bundle.notes.append("Crawled text did not identify a specific purchasable product; review the scope of this assessment.")
+        if not result["reasons"]:
+            overview = next((item for item in bundle.evidence if item.kind == "vendor overview"), None)
+            if overview:
+                result["reasons"] = [{
+                    "severity": "Yellow", "claim": "Verify which product, if any, this vendor page represents.",
+                    "source_url": overview.source_url, "quote": overview.claim.partition(": ")[2],
+                    "source_date": None, "verification": "direct_extraction",
+                }]
+    result = {"url": url, **result, "product_type": product_type, "judge_mode": mode, "coverage_notes": bundle.notes}
     for color in LABELS:
         result[f"{color.lower()}_flags"] = [
             {key: value for key, value in r.items() if key != "severity"} for r in result["reasons"]

@@ -468,11 +468,22 @@ def verify_claims(verdict, evidence, key, http):
 
 MODEL_ERRORS = (requests.RequestException, OSError, ValueError, KeyError, TypeError, AttributeError, IndexError)
 
+HARDWARE_RUBRIC = """
+For hardware and mixed products, judge the exact model/revision and distinguish the hardware
+from any companion app or cloud service. Green requires evidence of an active supported product,
+such as current firmware/drivers and independent availability. Yellow includes unclear support
+horizons or ambiguous model-specific conformity. Red requires a documented material blocker,
+such as an applicable unresolved safety recall, end of support without a viable replacement, or a
+material unpatched issue. Verify model, revision, jurisdiction and date; certification markings
+without a matching declaration/authorization are not proof, and silence is not evidence of a recall.
+"""
 
-def vote_verdict(key, payload, screenshot, http, evidence, collection):
+
+def vote_verdict(key, payload, screenshot, http, evidence, collection, *, hardware=False):
     def sample_verdict(sample):
         try:
-            return validate(model_request(key, payload, screenshot, http, sample=sample), evidence, collection)
+            options = {"system": RUBRIC + HARDWARE_RUBRIC} if hardware else {}
+            return validate(model_request(key, payload, screenshot, http, sample=sample, **options), evidence, collection)
         except MODEL_ERRORS:
             return None
 
@@ -494,7 +505,7 @@ def vote_verdict(key, payload, screenshot, http, evidence, collection):
     return verdict
 
 
-def judge(url, collection, excluded_row=None, http=None):
+def judge(url, collection, excluded_row=None, http=None, *, product_type="software"):
     key = os.getenv("LLM_API_KEY")
     if key and collection.evidence:
         evidence = prioritize(collection.evidence)
@@ -509,7 +520,8 @@ def judge(url, collection, excluded_row=None, http=None):
                          for i, item in enumerate(evidence, 1)],
         }, ensure_ascii=False)
         try:
-            verdict = vote_verdict(key, payload, collection.screenshot, http, evidence, collection)
+            verdict = vote_verdict(key, payload, collection.screenshot, http, evidence, collection,
+                                   hardware=product_type in {"hardware", "mixed"})
             blockers, summary = documented_blocker(url, collection)
             if blockers and verdict["overall"] != "Red":
                 verified_colors = {reason["severity"] for reason in blockers}

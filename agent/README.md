@@ -41,6 +41,8 @@ Keys are optional. Export them or put them in a local, ignored `.env` file:
 
 Collectors share a bounded HTTP cache and pace requests by host. Website fetches respect robots rules and disallow direct private-network URLs; this CLI is not a sandbox, and should not be exposed as a service that browses arbitrary untrusted input. Network errors, robots denials, missing archive coverage, and empty searches are not negative vendor findings. No agents contact vendors or run active security probes.
 
+If the crawled product overview identifies hardware or a mixed hardware/software offering, the agent uses nine model-specific topics covering firmware/driver releases, lifetime support, advisories, recalls, conformity records, independent retail/distribution, naming, ownership, and region. JSON includes `product_type`; a non-product or unclassifiable page keeps the same output shape and adds a coverage note. CSV columns are unchanged.
+
 ## Evaluate
 
 ```bash

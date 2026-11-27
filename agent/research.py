@@ -22,6 +22,17 @@ TOPICS = {
     "jurisdiction": 'Russia operations "Yale CELI" sanctions ownership',
     "procurement": '"formerly" OR "migration" OR "end of support" OR "licensing changes" OR "price increases" vendor product',
 }
+HARDWARE_TOPICS = {
+    "firmware": "official firmware driver latest update release notes exact hardware revision",
+    "lifecycle": "end of life end of support warranty replacement parts exact model",
+    "incidents": "vendor product security advisories patched firmware CVE exact model",
+    "enforcement": "product safety recall government consumer protection CPSC Safety Gate enforcement",
+    "conformity": "CE declaration of conformity FCC equipment authorization exact model certification",
+    "distribution": "independent retailer distributor authorized reseller exact part number",
+    "ownership": TOPICS["ownership"],
+    "naming": TOPICS["naming"],
+    "jurisdiction": TOPICS["jurisdiction"],
+}
 ARCHIVE = "https://web.archive.org"
 SOURCE_CHECK_TOPICS = {"search excerpt: enforcement", "search excerpt: jurisdiction"}
 PUBLIC_RECORD_SOURCES = {"ftc.gov", "noyb.eu", "som.yale.edu", "yalerussianbusinessretreat.com"}
@@ -212,13 +223,13 @@ def corroborate_records(http, name, items):
     return result
 
 
-def collect_search(http, url, identity):
+def collect_search(http, url, identity, product_type="software"):
     key = os.getenv("TAVILY_API_KEY")
     if not key:
         return Collection(notes=["Independent web search skipped: TAVILY_API_KEY not set."])
     name = registrable(url)
     out = Collection()
-    topics = list(TOPICS.items())
+    topics = (HARDWARE_TOPICS if product_type in {"hardware", "mixed"} else TOPICS).items()
     with ThreadPoolExecutor(max_workers=3) as pool:
         futures = [
             pool.submit(search, topic, terms, f"{name} {identity}".strip(), http, key)

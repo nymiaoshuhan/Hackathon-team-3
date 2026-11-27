@@ -13,8 +13,8 @@ from batch import bounded_vendor
 from customers import inspect_customer
 from evidence import Collection, Evidence, Http, Response, public_url
 from judge import documented_blocker, judge, model_request, pending_only, provider_for, purchase_caution, validate, verify_claims, vote_verdict
-from research import corroborate_records
-from vendor_site import collect_site, inspect_privacy_document
+from research import collect_search, corroborate_records
+from vendor_site import classify_product, collect_site, inspect_privacy_document
 
 
 class FixtureHttp:
@@ -87,6 +87,46 @@ class AgentTests(unittest.TestCase):
         self.assertTrue(any(r.kind == "release" and r.source_url == docs for r in result.evidence))
         self.assertTrue(any(r.kind == "dead link" and r.source_url == url for r in result.evidence))
         self.assertTrue(all(crawl for _, crawl in http.visited))
+
+    def test_product_classification_prefers_exact_product_over_parent_home(self):
+        cases = {
+            "Example AX23 mesh router": "hardware",
+            "Example NAS with a companion app": "mixed",
+            "Network software for a router": "software",
+            "A nonprofit consultancy": "non-product",
+            "A better way forward": "unclassifiable",
+        }
+        url = "https://example.org/products/widget"
+        for overview, expected in cases.items():
+            with self.subTest(overview=overview):
+                evidence = [
+                    Evidence("vendor overview", f"product: {overview}", url),
+                    Evidence("vendor overview", "home: Software and 3D printers", "https://example.org/"),
+                ]
+                self.assertEqual(classify_product(evidence), expected)
+
+    @patch.dict("os.environ", {"TAVILY_API_KEY": "stub"}, clear=True)
+    @patch("research.search", return_value=([], ""))
+    def test_hardware_search_replaces_software_topics_without_adding_requests(self, search):
+        collect_search(FixtureHttp({}), "https://example.org/products/ax23", "AX23", "hardware")
+        queries = {call.args[0] for call in search.call_args_list}
+        self.assertEqual(search.call_count, 9)
+        self.assertTrue({"firmware", "incidents", "enforcement", "conformity", "distribution", "lifecycle"} <= queries)
+        self.assertNotIn("customers", queries)
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_non_product_still_returns_sourced_row_and_scope_note(self):
+        url = "https://example.org/"
+        evidence = Evidence("vendor overview", "product: An independent nonprofit", url)
+        with tempfile.TemporaryDirectory() as directory, \
+             patch("agent.collect_site", return_value=Collection([evidence])), \
+             patch("agent.archive", return_value=Collection()), patch("agent.registration", return_value=Collection()), \
+             patch("agent.collect_search", return_value=Collection()) as search:
+            result = run_vendor(url, Http(directory), audit=True)
+        self.assertEqual(search.call_args.args[-1], "non-product")
+        self.assertEqual((result["product_type"], result["overall"]), ("non-product", "Yellow"))
+        self.assertEqual(result["yellow_flags"][0]["source_url"], url)
+        self.assertTrue(any("purchasable product" in note for note in result["coverage_notes"]))
 
     def test_model_grounding_drops_unknown_link_and_out_of_range_id(self):
         url = "https://example.org/releases"

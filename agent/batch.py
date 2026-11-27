@@ -11,7 +11,8 @@ from pathlib import Path
 
 def unavailable(url, detail):
     return {
-        "url": url, "product": "", "vendor": "", "overall": "Yellow", "confidence": 0.10,
+        "url": url, "product": "", "vendor": "", "product_type": "unclassifiable",
+        "overall": "Yellow", "confidence": 0.10,
         "green_flags": [], "yellow_flags": [], "red_flags": [], "reasons": [],
         "reasoning": f"Insufficient evidence: {detail} No negative finding was inferred.",
         "judge_mode": "unavailable", "coverage_notes": [detail],

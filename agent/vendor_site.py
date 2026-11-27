@@ -45,6 +45,38 @@ def domain(url):
     return (urlsplit(url).hostname or "").lower().removeprefix("www.")
 
 
+def classify_product(evidence):
+    overview = " ".join(item.claim for item in evidence if item.kind == "vendor overview"
+                        and item.claim.startswith("product:"))
+    if not overview:
+        overview = " ".join(item.claim for item in evidence if item.kind == "vendor overview")
+    hardware = re.search(
+        r"\b(?:hardware|wi-fi (?:range extender|access point)|(?:wireless|gigabit|wi-fi [67e ]*|mesh)\s+router|"
+        r"router|network switch|NAS|network.attached storage|solid.state drive|SSD|laptop|graphics card|"
+        r"smartphone|surveillance camera|3D printer|(?:LCD|LED|gaming) monitor|microcontroller|barcode scanner)\b",
+        overview, re.I,
+    )
+    explicit_hardware = hardware and not re.search(
+        r"\b(?:software|app|drivers?|management|firmware)\s+(?:for|to configure)\b",
+        overview[:hardware.start()], re.I,
+    )
+    software = re.search(
+        r"\b(?:software|SaaS|applications?|app|open.source|platform|web.based|API client|password manager)\b",
+        overview, re.I,
+    )
+    companion = re.search(
+        r"\b(?:companion|mobile|desktop|management) (?:app|software)|cloud (?:management|service|platform)\b",
+        overview, re.I,
+    )
+    if explicit_hardware:
+        return "mixed" if companion else "hardware"
+    if software:
+        return "software"
+    if re.search(r"\b(?:blog|news site|magazine|nonprofit|charity|consultancy|consulting services)\b", overview, re.I):
+        return "non-product"
+    return "unclassifiable"
+
+
 def clean(text, length=200):
     return " ".join((text or "").split())[:length]
 
