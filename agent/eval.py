@@ -32,11 +32,12 @@ def read_labels(path):
         ]
 
 
-def evaluate(labels, http, workers, screenshot):
+def evaluate(labels, http, workers, screenshot, *, second_judge=None):
     results = {}
     with ThreadPoolExecutor(max_workers=min(12, workers)) as pool:
         jobs = {
-            pool.submit(run_vendor, row["url"], http, excluded_row=row["id"], screenshot=screenshot): index
+            pool.submit(run_vendor, row["url"], http, excluded_row=row["id"], screenshot=screenshot,
+                        second_judge=second_judge): index
             for index, row in enumerate(labels)
         }
         for future in as_completed(jobs):
@@ -81,7 +82,7 @@ def main():
         if not labels or any(row["overall"] not in LABELS for row in labels):
             parser.error("expected a nonempty labeled CSV with Green, Yellow or Red verdicts")
         http = Http(args.cache_dir)
-        results = evaluate(labels, http, args.workers, not args.no_screenshot)
+        results = evaluate(labels, http, args.workers, not args.no_screenshot, second_judge=args.second_judge)
         metrics = summarize(results)
         metrics["api_usage"] = report_usage(http)
         args.out.write_text(json.dumps({"metrics": metrics, "rows": results}, ensure_ascii=False, indent=2) + "\n",

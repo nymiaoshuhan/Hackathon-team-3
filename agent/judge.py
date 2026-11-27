@@ -141,13 +141,13 @@ def provider_for(key):
     return "openai" if key.startswith("sk-") else "nebius"
 
 
-def model_request(key, user, screenshot, http=None, *, system=RUBRIC, sample=0):
+def model_request(key, user, screenshot, http=None, *, system=RUBRIC, sample=0, model_override=None):
     provider = provider_for(key)
     if provider not in PROVIDERS:
         raise ValueError("Unknown LLM_PROVIDER")
     default_base, default_model = PROVIDERS[provider]
     base = os.getenv("LLM_BASE_URL", default_base).rstrip("/")
-    model = os.getenv("LLM_MODEL", default_model)
+    model = model_override or os.getenv("LLM_MODEL", default_model)
     image = None
     if screenshot and os.getenv("LLM_VISION", "").lower() in {"1", "true", "yes"}:
         image = base64.b64encode(screenshot.read_bytes()).decode("ascii")
@@ -434,7 +434,7 @@ Copy that date text exactly; never substitute the date of an event mentioned by 
 Return exactly one check per ID."""
 
 
-def verify_claims(verdict, evidence, key, http):
+def verify_claims(verdict, evidence, key, http, *, model_override=None):
     by_source = defaultdict(list)
     for item in dict.fromkeys(evidence):
         by_source[item.source_url].append(item.claim[:900])
@@ -444,7 +444,9 @@ def verify_claims(verdict, evidence, key, http):
     checks = {}
     try:
         if inputs:
-            response = model_request(key, json.dumps(inputs, ensure_ascii=False), None, http, system=VERIFY_CLAIMS)
+            options = {"model_override": model_override} if model_override else {}
+            response = model_request(key, json.dumps(inputs, ensure_ascii=False), None, http, system=VERIFY_CLAIMS,
+                                     **options)
             checks = {row["id"]: row for row in response["checks"]
                       if isinstance(row, dict) and type(row.get("id")) is int}
     except (requests.RequestException, OSError, ValueError, KeyError, TypeError, AttributeError, IndexError):
@@ -503,10 +505,12 @@ without a matching declaration/authorization are not proof, and silence is not e
 """
 
 
-def vote_verdict(key, payload, screenshot, http, evidence, collection, *, hardware=False):
+def vote_verdict(key, payload, screenshot, http, evidence, collection, *, hardware=False, model_override=None):
     def sample_verdict(sample):
         try:
             options = {"system": RUBRIC + HARDWARE_RUBRIC} if hardware else {}
+            if model_override:
+                options["model_override"] = model_override
             return validate(model_request(key, payload, screenshot, http, sample=sample, **options), evidence, collection)
         except MODEL_ERRORS:
             return None
@@ -529,7 +533,8 @@ def vote_verdict(key, payload, screenshot, http, evidence, collection, *, hardwa
     return verdict
 
 
-def judge(url, collection, excluded_row=None, http=None, *, product_type="software"):
+def judge(url, collection, excluded_row=None, http=None, *, product_type="software", second_judge=None,
+          primary_model=None):
     key = os.getenv("LLM_API_KEY")
     if key and collection.evidence:
         evidence = prioritize(collection.evidence)
@@ -544,9 +549,10 @@ def judge(url, collection, excluded_row=None, http=None, *, product_type="softwa
             "evidence": [{"id": i, "kind": item.kind, "claim": item.claim, "source_url": item.source_url}
                          for i, item in enumerate(evidence, 1)],
         }, ensure_ascii=False)
-        try:
+        def review(model_override=None):
+            options = {"model_override": model_override} if model_override else {}
             verdict = vote_verdict(key, payload, collection.screenshot, http, evidence, collection,
-                                   hardware=product_type in {"hardware", "mixed"})
+                                   hardware=product_type in {"hardware", "mixed"}, **options)
             blockers, summary = documented_blocker(url, collection)
             if blockers and verdict["overall"] != "Red":
                 verified_colors = {reason["severity"] for reason in blockers}
@@ -564,12 +570,50 @@ def judge(url, collection, excluded_row=None, http=None, *, product_type="softwa
                     existing = [r for r in verdict["reasons"] if r["severity"] == "Yellow" and r not in caution]
                     verdict["reasons"] = (caution + existing)[:3] + [r for r in verdict["reasons"] if r["severity"] != "Yellow"]
             verdict = hollow_guard(verdict, collection)
-            return coverage_guard(verify_claims(verdict, collection.evidence, key, http), collection), "llm", ""
+            return coverage_guard(verify_claims(verdict, collection.evidence, key, http, **options), collection)
+
+        try:
+            if not second_judge:
+                return review(primary_model), "llm", ""
+            provider = provider_for(key)
+            if provider not in PROVIDERS or second_judge == (primary_model or os.getenv("LLM_MODEL", PROVIDERS[provider][1])):
+                return review(primary_model), "llm", "Second judge skipped: supply a different model from the configured provider."
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                secondary = pool.submit(review, second_judge)
+                primary = review(primary_model)
+                try:
+                    additional = secondary.result()
+                except MODEL_ERRORS:
+                    additional = None
+            return combine_verdicts(primary, additional, second_judge), "llm", (
+                "" if additional else "Second judge unavailable; kept the primary verdict."
+            )
         except MODEL_ERRORS as error:
             code = error.response.status_code if isinstance(error, requests.HTTPError) and error.response is not None else type(error).__name__
             return coverage_guard(rules(url, collection), collection), "rules", f"LLM verdict unavailable ({code}); used conservative local rules."
     note = "No evidence gathered; used conservative local rules." if not collection.evidence else "LLM_API_KEY not set; used conservative local rules."
     return coverage_guard(rules(url, collection), collection), "rules", note
+
+
+def combine_verdicts(primary, secondary, model):
+    first = primary["overall"]
+    second = secondary["overall"] if secondary else None
+    decision = "primary"
+    verdict = dict(primary)
+    if first == "Yellow" and second in {"Green", "Red"}:
+        decision = "secondary"
+        verdict = dict(secondary)
+    elif {first, second} == {"Green", "Red"}:
+        decision = "conflict"
+        reasons = [reason for reason in primary["reasons"] if reason["severity"] != second]
+        reasons += [reason for reason in secondary["reasons"] if reason["severity"] == second]
+        checks = [check for check in primary.get("claim_verification", []) if check["severity"] != second]
+        checks += [check for check in secondary.get("claim_verification", []) if check["severity"] == second]
+        verdict.update(overall="Yellow", confidence=min(0.55, primary["confidence"], secondary["confidence"]),
+                       reasons=reasons, claim_verification=checks,
+                       reasoning="The judges disagreed between Green and Red. Review the cited evidence before purchase.")
+    verdict["ensemble"] = {"primary": first, "second_model": model, "secondary": second, "decision": decision}
+    return verdict
 
 
 HOLLOW_SIGNALS = {"traction claim", "reported adoption count", "different adoption counts",

@@ -83,6 +83,18 @@ All 16 Yellow rows were correct with Haiku versus 13 with GPT-OSS. Haiku's run r
 
 The imported pipeline was smoke-tested on the same five example URLs: 5 matching CSV and JSON rows, all in model mode, in **9.52 s**. Tavily reused 47 cached responses with **0 new credits**. Nebius used 20 calls, 141,144 input tokens, and 14,364 output tokens (about **$0.03** at list price). This smoke run checks execution and output parity, not verdict accuracy; the earlier checked-in example outputs were not overwritten.
 
+### Model comparison after fixes 1–3
+
+We captured evidence for all 40 products once with the fixed pipeline and screenshots off, then ran each model through the same voting, rules and verification stages on that capture. Tavily had **375 cache hits, 0 new credits, and 0 cache misses**. This is a separate development run from the laptop results above; compare models within this capture rather than treating the score change as a model improvement.
+
+| Judge | Correct | Model / rules rows | Judge median / p95 per row | Estimated Nebius cost |
+| --- | ---: | ---: | ---: | ---: |
+| GPT-OSS 120B | **31/40 (77.5%)** | 40 / 0 | 5.63 s / 7.44 s | $0.24 |
+| DeepSeek V4.1 Flash Fast | 24/40 (60.0%) | 29 / 11 | 13.05 s / 18.42 s | $1.75 |
+| Kimi K3.1 Pro | 26/40 (65.0%) | 26 / 14 | 54.76 s / 84.30 s | $6.81 |
+
+All three had zero Red → Green and zero Green → Red errors. In the saved-run replay, “decisive wins, Green vs Red → Yellow” with either second judge made **no verdict changes** versus GPT-OSS alone. Letting any second-judge Red override GPT-OSS also made no changes. A strict majority of active judges, with ties sent to Yellow and rules-mode fallbacks abstaining, dropped to **26/40**. The Nebius launcher tracked **$8.80** under a **$20 cap**, including a conservative allowance for three Kimi calls without confirmed usage. Judge timings exclude evidence collection, so they are not end-to-end times. GPT-OSS remains the live default; the second judge is opt-in for experiments.
+
 ## Cost and reproduction
 
 - **Locked, 40 rows:** 0 new Tavily credits (375 cache hits); 120 new Nebius requests (40 cached), 761,124 input and 76,824 output tokens, approximately **$0.16** at list pricing.

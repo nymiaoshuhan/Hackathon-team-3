@@ -19,9 +19,9 @@ def unavailable(url, detail):
     }
 
 
-def bounded_vendor(script, url, timeout, cache_dir, screenshot, audit):
+def bounded_vendor(script, url, timeout, cache_dir, screenshot, audit, *, second_judge=None):
     start = time.monotonic()
-    result, usage = run_worker(script, url, timeout, cache_dir, screenshot, audit)
+    result, usage = run_worker(script, url, timeout, cache_dir, screenshot, audit, second_judge=second_judge)
     result["elapsed_seconds"] = round(time.monotonic() - start, 2)
     return result, usage
 
@@ -44,12 +44,14 @@ def worker_result(stdout, url, failure=""):
     return unavailable(url, failure or "Vendor result could not be retrieved."), {}
 
 
-def run_worker(script, url, timeout, cache_dir, screenshot, audit):
+def run_worker(script, url, timeout, cache_dir, screenshot, audit, *, second_judge=None):
     command = [sys.executable, str(Path(script).resolve()), "--worker-json", "--cache-dir", str(cache_dir)]
     if not screenshot:
         command.append("--no-screenshot")
     if audit:
         command.append("--evidence")
+    if second_judge:
+        command.extend([f"--second-judge={second_judge}"])
     command.extend(["--", url])
     try:
         with subprocess.Popen(command, encoding="utf-8", errors="replace", stdout=subprocess.PIPE, stderr=subprocess.PIPE,

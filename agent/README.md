@@ -31,6 +31,8 @@ python agent.py --blind --input live_urls.txt --out verdicts.csv --audit-out ver
 
 On Windows, `./run_live.ps1 -Urls live_urls.txt` runs the same pipeline and writes `live_out/verdicts.csv` and `live_out/verdicts.json`. Submit the pipeline CSV. `-DeepResearch` is an opt-in experiment, not the submission path; its files are named `deep_experiment.*` and never replace the pipeline files. Standalone `python deep_agent.py --help` describes the optional backends: an authenticated Claude Code CLI by default, or a separately installed `anthropic` Python package and key for `--backend api`.
 
+To test a second judge with the same provider and key, add `--second-judge deepseek-ai/DeepSeek-V4.1-Flash-1017-fast` to the Python command or to `eval.py`. Both judges use the same collected evidence and verify their reasons. A decisive call wins against Yellow; opposing Green and Red calls produce Yellow. If the second model fails, the first verdict stands. The JSON records both calls and which verdict was used. This is off by default and adds model cost and latency, but does not repeat web research.
+
 Keys are optional. Export them or put them in a local, ignored `.env` file:
 
 | Variable | Purpose |

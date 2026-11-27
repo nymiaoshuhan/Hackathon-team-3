@@ -90,7 +90,8 @@ def partial_result(url, bundle, product_type, audit):
     return result_row(url, verdict, bundle, product_type, "partial", audit)
 
 
-def run_vendor(raw_url, http, *, screenshot=True, excluded_row=None, audit=False, publish_partial=None):
+def run_vendor(raw_url, http, *, screenshot=True, excluded_row=None, audit=False, publish_partial=None,
+               second_judge=None):
     url = normalize(raw_url)
     reports = {}
     product_type = "unclassifiable"
@@ -133,7 +134,7 @@ def run_vendor(raw_url, http, *, screenshot=True, excluded_row=None, audit=False
         bundle.notes.extend(customers.notes)
     except (ValueError, RuntimeError, OSError) as error:
         bundle.notes.append(f"Customer verification unavailable ({type(error).__name__}).")
-    result, mode, note = judge(url, bundle, excluded_row, http, product_type=product_type)
+    result, mode, note = judge(url, bundle, excluded_row, http, product_type=product_type, second_judge=second_judge)
     if note:
         bundle.notes.append(note)
     if product_type in {"non-product", "unclassifiable"}:
@@ -183,6 +184,7 @@ def common_args(parser):
     parser.add_argument("--workers", type=positive_int, default=4, help="concurrent vendors (default 4)")
     parser.add_argument("--cache-dir", default="cache")
     parser.add_argument("--no-screenshot", action="store_true", help="skip routine screenshots, retaining JS fallback")
+    parser.add_argument("--second-judge", metavar="MODEL", help="experimental second model from the configured provider")
 
 
 def report_usage(http, usage=None):
@@ -216,7 +218,8 @@ def main():
         def publish(result):
             print(json.dumps({"result": result, "usage": http.usage_summary()}, ensure_ascii=False), flush=True)
 
-        result = run_vendor(args.url, http, screenshot=not args.no_screenshot, audit=args.evidence, publish_partial=publish)
+        result = run_vendor(args.url, http, screenshot=not args.no_screenshot, audit=args.evidence,
+                            publish_partial=publish, second_judge=args.second_judge)
         publish(result)
         return
     if args.blind:
@@ -241,13 +244,14 @@ def main():
         http = Http(args.cache_dir)
         usage = Counter(http.usage_summary())
         if args.url:
-            results = [run_vendor(args.url, http, screenshot=not args.no_screenshot, audit=args.evidence)]
+            results = [run_vendor(args.url, http, screenshot=not args.no_screenshot, audit=args.evidence,
+                                  second_judge=args.second_judge)]
             usage.update(http.usage_summary())
         else:
             with ThreadPoolExecutor(max_workers=min(12, args.workers)) as pool:
                 pairs = list(pool.map(
                     lambda url: bounded_vendor(__file__, url, args.timeout, args.cache_dir,
-                                               not args.no_screenshot, args.evidence), urls
+                                               not args.no_screenshot, args.evidence, second_judge=args.second_judge), urls
                 ))
             results = [result for result, _ in pairs]
             for _, counts in pairs:

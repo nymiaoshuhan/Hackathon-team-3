@@ -15,7 +15,7 @@ from agent import COLUMNS, identity_hint, normalize, run_vendor, write_results
 from batch import bounded_vendor
 from customers import inspect_customer
 from evidence import Collection, Evidence, Http, Response, public_url
-from judge import coverage_guard, documented_blocker, hollow_guard, judge, model_request, pending_only, provider_for, purchase_caution, validate, verify_claims, vote_verdict
+from judge import combine_verdicts, coverage_guard, documented_blocker, hollow_guard, judge, model_request, pending_only, provider_for, purchase_caution, validate, verify_claims, vote_verdict
 from research import ARCHIVE, archive, collect_search, company_profile_size, corroborate_records
 from vendor_site import LEGAL_COVERAGE_NOTE, ROBOTS_NOTE, classify_product, collect_site, extract, inspect_privacy_document, published_aliases
 
@@ -252,6 +252,43 @@ class AgentTests(unittest.TestCase):
         self.assertNotIn("old-looking open-source", json.dumps(payload["examples"]))
         self.assertNotIn(LEGAL_COVERAGE_NOTE, payload["coverage_notes"])
         self.assertEqual(result["reasons"][0]["source_url"], source)
+
+    @patch.dict("os.environ", {"LLM_API_KEY": "test-key"}, clear=True)
+    @patch("judge.model_request")
+    def test_second_judge_promotes_only_a_verified_call_and_abstains_on_failure(self, request):
+        source = "https://example.org/release"
+        collection = Collection([Evidence("release", "Version 4.1", source)])
+
+        def respond(*args, model_override=None, system=None, **kwargs):
+            if model_override and unavailable:
+                raise ValueError("Second judge unavailable")
+            if system:
+                return {"checks": [{"id": 1, "status": "yes", "quote": "Version 4.1"}]}
+            color = "Green" if model_override else "Yellow"
+            return {"overall": color, "reasons": [
+                {"severity": color, "claim": "Published release", "evidence_id": 1},
+            ]}
+
+        unavailable = False
+        request.side_effect = respond
+        result, mode, note = judge(source, collection, second_judge="other-model")
+        self.assertEqual((result["overall"], mode, note), ("Green", "llm", ""))
+        self.assertEqual(result["ensemble"]["decision"], "secondary")
+        self.assertEqual(result["reasons"][0]["quote"], "Version 4.1")
+        unavailable = True
+        result, mode, note = judge(source, collection, second_judge="other-model")
+        self.assertEqual((result["overall"], mode, result["ensemble"]["secondary"]), ("Yellow", "llm", None))
+        self.assertIn("kept the primary", note)
+
+    def test_opposing_decisive_judges_return_yellow(self):
+        green = {"severity": "Green", "claim": "New release", "source_url": "https://example.org/releases"}
+        red = {"severity": "Red", "claim": "Not for sale", "source_url": "https://example.org/purchase"}
+        primary = {"overall": "Green", "confidence": 0.9, "reasons": [green]}
+        secondary = {"overall": "Red", "confidence": 0.8, "reasons": [red]}
+        result = combine_verdicts(primary, secondary, "other-model")
+        self.assertEqual((result["overall"], result["ensemble"]["decision"]), ("Yellow", "conflict"))
+        self.assertEqual(result["reasons"], [green, red])
+        self.assertEqual(primary["overall"], "Green")
 
     @patch("judge.model_request")
     def test_majority_vote_selects_a_valid_representative(self, request):
