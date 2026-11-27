@@ -235,16 +235,37 @@ def corroborate_records(http, name, items):
     return result
 
 
-def collect_search(http, url, identity, product_type="software"):
+def company_profile_size(url, evidence):
+    canonical = re.sub(r"\W", "", registrable(url).split(".")[0])
+    if len(canonical) < 4:
+        return None
+    for item in evidence:
+        if registrable(item.source_url) != "linkedin.com":
+            continue
+        profile = re.fullmatch(r"/company/([^/]+)/?", urlsplit(item.source_url).path)
+        if not profile or re.sub(r"\W", "", profile[1].casefold()) != canonical:
+            continue
+        count = re.search(r"(?<![\d,])\b(\d{1,3})(?:[-–](\d{1,3}))?\s+(?:employees|associated members)\b", item.claim, re.I)
+        if count and 0 < int(count[2] or count[1]) <= 50:
+            return Evidence("reported LinkedIn size",
+                            f'LinkedIn search excerpt: “{count[0]}”. A profile count is self-reported or based on associated members; it is not an audited company headcount.',
+                            item.source_url)
+    return None
+
+
+def collect_search(http, url, identity, product_type="software", *, aliases=()):
     key = os.getenv("TAVILY_API_KEY")
     if not key:
         return Collection(notes=["Independent web search skipped: TAVILY_API_KEY not set."])
     name = registrable(url)
     out = Collection()
     topics = (HARDWARE_TOPICS if product_type in {"hardware", "mixed"} else TOPICS).items()
+    canonical = f"{name} {identity}".strip()
+    alias_query = ("(" + " OR ".join(f'"{alias}"' for alias in (name, *aliases)) + f") {identity}").strip() if aliases else canonical
     with ThreadPoolExecutor(max_workers=3) as pool:
         futures = [
-            pool.submit(search, topic, terms, f"{name} {identity}".strip(), http, key)
+            pool.submit(search, topic, terms,
+                        alias_query if topic in {"incidents", "enforcement", "jurisdiction"} else canonical, http, key)
             for topic, terms in topics
         ]
         seen = set()
@@ -258,4 +279,7 @@ def collect_search(http, url, identity, product_type="software"):
                     out.evidence.append(item)
     out.evidence.extend(github(http, out.evidence))
     out.evidence.extend(corroborate_records(http, name, out.evidence))
+    size = company_profile_size(url, out.evidence)
+    if size:
+        out.evidence.append(size)
     return out

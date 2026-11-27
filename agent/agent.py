@@ -19,7 +19,7 @@ from customers import confirm_customers
 from evidence import Collection, Http
 from judge import LABELS, judge
 from research import archive, collect_search, registration
-from vendor_site import ROBOTS_NOTE, classify_product, collect_site, domain
+from vendor_site import ROBOTS_NOTE, classify_product, collect_site, domain, published_aliases
 
 
 COLUMNS = ("url", "product", "vendor", "overall", "confidence", "green_flags",
@@ -114,7 +114,8 @@ def run_vendor(raw_url, http, *, screenshot=True, excluded_row=None, audit=False
                     identity = identity_hint(url)
                     if product_type in {"hardware", "mixed"}:
                         identity = " ".join(dict.fromkeys(filter(None, (identity, output.product))))[:140]
-                    jobs[pool.submit(collect_search, http, url, identity, product_type)] = "web search"
+                    aliases = published_aliases(output.evidence, output.vendor or domain(url).split(".")[0])
+                    jobs[pool.submit(collect_search, http, url, identity, product_type, aliases=aliases)] = "web search"
                     blocked = list(dict.fromkeys(note.removeprefix(ROBOTS_NOTE) for note in output.notes
                                                  if note.startswith(ROBOTS_NOTE)))
                     for index, target in enumerate(blocked[:2], 1):

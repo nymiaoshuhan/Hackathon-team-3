@@ -12,7 +12,7 @@ from urllib.parse import unquote, urlsplit
 
 import requests
 
-from vendor_site import ROBOTS_NOTE, clean, domain
+from vendor_site import LEGAL_COVERAGE_NOTE, ROBOTS_NOTE, clean, domain
 
 
 LABELS = ("Green", "Yellow", "Red")
@@ -361,6 +361,11 @@ def purchase_caution(url, collection):
     adoption = next((item for item in primary if item.kind == "reported adoption count" and re.search(
         r"\(\d{2,},\d{3},\d{3} reported users", item.claim
     )), None)
+    size = next((item for item in collection.evidence if item.kind == "reported LinkedIn size"), None)
+    if adoption and size:
+        return [flag("Yellow", adoption.claim, adoption), flag("Yellow", size.claim, size)], (
+            "Independently verify what the vendor's large user count measures and whether support staffing meets buyer needs."
+        )
     if adoption and not any(item.kind in {"legal entity", "certification claim", "customer confirms use"}
                             for item in collection.evidence):
         return [flag("Yellow", adoption.claim, adoption)], (
@@ -378,6 +383,9 @@ def purchase_caution(url, collection):
                 return [flag("Yellow", headline, item)], (
                     "For a credential-management product, a recent customer-data theft report warrants checking the affected systems and remediation before purchase."
                 )
+    for item in primary:
+        if item.kind in {"social link placeholder", "different adoption counts"}:
+            return [flag("Yellow", item.claim, item)], "Verify the vendor's traction claims from an independent source."
     return [], ""
 
 
@@ -450,9 +458,15 @@ def verify_claims(verdict, evidence, key, http):
         audit.append({**reason, "status": status})
         if status in ("yes", "partial"):
             claim = reason["claim"] if status == "yes" else f'Source reports: “{quote}”'
+            host = domain(reason["source_url"])
+            if (reason["severity"] == "Green" and (host == "linkedin.com" or host.endswith(".linkedin.com"))
+                    and re.search(r"\b(?:adoption|deployment|deployed|customers?|usage|users?|widely used)\b",
+                                  claim, re.I)):
+                audit[-1].update(discard_reason="A LinkedIn profile is not independent adoption evidence.")
+                continue
             kept.append({**reason, "claim": claim, "verification": status, "quote": quote, "source_date": source_date})
             audit[-1].update(retained_claim=claim, quote=quote, source_date=source_date)
-    incomplete = any(row["status"] != "yes" for row in audit)
+    incomplete = any(row["status"] != "yes" or "discard_reason" in row for row in audit)
     verdict.update(reasons=kept, claim_verification=audit)
     if verdict["overall"] != "Yellow" and not any(
         row["severity"] == verdict["overall"] and row["verification"] == "yes" for row in kept
@@ -515,6 +529,7 @@ def judge(url, collection, excluded_row=None, http=None, *, product_type="softwa
                          if str(row) != str(excluded_row)],
             "coverage_notes": [note for note in collection.notes if not note.startswith((
                 "Sampled customer claims were not confirmed", "Named customer claims were not independently checked",
+                LEGAL_COVERAGE_NOTE,
             ))],
             "evidence": [{"id": i, "kind": item.kind, "claim": item.claim, "source_url": item.source_url}
                          for i, item in enumerate(evidence, 1)],

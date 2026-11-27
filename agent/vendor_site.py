@@ -30,16 +30,24 @@ SIGNALS = {
     "traction claim": r"\b\d[\d,.]*\s*(?:[km]\b|millions?\b|billions?\b|mio\.?)?\s*\+?\s+(?:customers|users|clients|companies|downloads|people|kunden|nutzer)\b|trusted by",
     "certification claim": r"ISO[ /-]*(?:IEC[ /-]*)?27001|SOC[ -]*2|BSI C5",
     "ownership claim": r"a [^.!?]{2,45} company\b|formerly|previously known as|acquired by|part of the .{2,40} group|ehemals|übernommen",
-    "lifecycle notice": r"discontinued|end.of.life|end of support|no longer maintained|sunset|maintenance mode|eingestellt|nicht mehr weiterentwickelt|(?:das|zum) letzte[nm] jahr|entwicklung endet",
+    "lifecycle notice": r"discontinued|end.of.life|end of support|no longer maintained|sunset|maintenance mode|eingestellt|nicht mehr weiterentwickelt|(?:das|zum) letzte[nm] jahr|entwicklung endet|fin de (?:vie|support)|fin (?:de vida útil|del soporte)|fine del supporto",
     "purchase transition": r"(?:(?:recommend|encourage|advis\w+)\b.{0,35}\b(?:migration|migrat\w+)|migrate from\b|migrating from\b|migrate (?:now )?to\b|not available for (?:new )?purchase|no longer (?:available|offered) for (?:new )?customers|formerly (?:marketed as|called|known as)|licen[cs](?:e|ing) changes)",
     "legal entity": r"(?:[\w&.-]+\s+){1,4}(?:GmbH|UG|Ltd\.?|Inc\.?|LLC|GmbH & Co\. KG|SAS|AG)\b|Handelsregister|HRB \d+",
 }
 RELEASE_DATE = re.compile(r"\b(?:20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}\.\d{1,2}\.20\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? 20\d{2})\b", re.I)
 ADOPTION_NUMBER = re.compile(r"\b(\d[\d,.]*)\s*(k|m|b|millions?|billions?)?\s*\+?\s+(users|customers|churches|clients|downloads|people)\b", re.I)
+SOCIAL_NETWORK = re.compile(r"\b(?:LinkedIn|Facebook|Instagram|YouTube|TikTok|Twitter|Mastodon)\b", re.I)
+ENTITY_NAME = r"(?-i:[A-ZÀ-ÖØ-Þ][\w&.-]*(?:\s+[A-ZÀ-ÖØ-Þ][\w&.-]*){0,3})"
+ALIAS_PATTERNS = (
+    rf"\b(?:formerly (?:known as|called)|previously known as|ehemals)\s+({ENTITY_NAME})",
+    rf"\b(?:acquired by|part of (?:the )?)\s+({ENTITY_NAME})",
+    rf"\b(?:an?|part of)\s+({ENTITY_NAME})\s+(?:company|group)\b",
+)
 NON_CUSTOMER_LABEL = re.compile(r"\b(?:partner|store|marketplace|program(?:me)?|badge|certified|certification|seal|siegel|award)\b", re.I)
 CUSTOMER_HEADING = re.compile(r"trusted by|our customers|customer stories|references|unsere kunden|referenzen", re.I)
 BROWSER_SLOTS = threading.BoundedSemaphore(2)
 ROBOTS_NOTE = "Robots policy limited live access: "
+LEGAL_COVERAGE_NOTE = "No legal entity was identified in the sampled pages"
 
 
 def domain(url):
@@ -62,7 +70,8 @@ def classify_product(evidence):
         overview[:hardware.start()], re.I,
     )
     software = re.search(
-        r"\b(?:software|SaaS|applications?|app|open.source|platform|web.based|API client|password manager)\b",
+        r"\b(?:software|SaaS|applications?|app|open.source|platform|web.based|API client|password manager|"
+        r"database engine|software library|online converter|PDF converter|workspace)\b",
         overview, re.I,
     )
     companion = re.search(
@@ -96,6 +105,20 @@ def links(soup, base):
         if urlsplit(href).scheme in {"https", "http"} and href != base:
             alt = [img.get("alt", "") for img in tag.find_all("img")]
             yield href, clean(tag.get_text(" ", strip=True) or " ".join(alt) or tag.get("aria-label"))
+
+
+def published_aliases(evidence, canonical):
+    aliases = []
+    compact = lambda name: re.sub(r"\W", "", name.casefold())
+    for item in evidence:
+        if item.kind != "ownership claim":
+            continue
+        for pattern in ALIAS_PATTERNS:
+            for match in re.finditer(pattern, item.claim, re.I):
+                alias = match[1].rstrip(".")
+                if len(alias) >= 3 and compact(alias) not in {compact(name) for name in (canonical, *aliases)}:
+                    aliases.append(alias)
+    return aliases[:2]
 
 
 def emit(out, kind, claim, url):
@@ -209,6 +232,18 @@ def extract(out, soup, url, purpose):
     if len(image_links) >= 3:
         emit(out, "image navigation", f"{len(image_links)} linked images have no visible link text on this page; verify navigation and support links.", url)
     if purpose in {"product", "home", "about", "customers"}:
+        placeholders = set()
+        if footer:
+            for tag in footer.select('a[href="#"]'):
+                label = " ".join([tag.get_text(" ", strip=True), tag.get("aria-label", ""), tag.get("title", ""),
+                                  " ".join(str(child.get("class", "")) for child in tag.find_all(["i", "span", "svg"]))])
+                placeholders.update(match[0].casefold() for match in SOCIAL_NETWORK.finditer(label))
+        if placeholders:
+            emit(out, "social link placeholder",
+                 f'Footer links labeled {", ".join(sorted(placeholders))} use "#" instead of a profile URL. These links do not substantiate a social presence.',
+                 url)
+
+        counts = {}
         for match in list(ADOPTION_NUMBER.finditer(body))[:12]:
             amount, scale, unit = match.groups()
             try:
@@ -220,6 +255,13 @@ def extract(out, soup, url, purpose):
                 continue
             excerpt = clean(body[max(0, match.start()-42):match.end()+55], 115)
             emit(out, "reported adoption count", f'Vendor text: “{excerpt}” ({count:,.0f} reported {unit.lower()}, not independently verified).', url)
+            counts.setdefault(unit.lower(), {})[count] = match[0]
+        for unit, amounts in counts.items():
+            low, high = min(amounts), max(amounts)
+            if high >= low * 10:
+                emit(out, "different adoption counts",
+                     f'The same page reports “{amounts[low]}” and “{amounts[high]}” for {unit}; reconcile their scope and dates before relying on either.',
+                     url)
     return body
 
 
@@ -344,4 +386,7 @@ def collect_site(http, url, screenshot=True):
         elif response.status in {404, 410} and broken < 3:
             emit(out, "dead link", f"Linked {purpose} page ({label or target}) returned HTTP {response.status}: {target}", parent)
             broken += 1
+    if pages and not any(item.kind == "legal entity" for item in out.evidence):
+        imprint = " No imprint or legal/contact link was identified in the sample." if "imprint" not in candidates else ""
+        out.notes.append(LEGAL_COVERAGE_NOTE + "; verify the contracting entity separately." + imprint)
     return out

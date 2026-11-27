@@ -9,13 +9,15 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 
+from bs4 import BeautifulSoup
+
 from agent import COLUMNS, identity_hint, normalize, run_vendor, write_results
 from batch import bounded_vendor
 from customers import inspect_customer
 from evidence import Collection, Evidence, Http, Response, public_url
 from judge import coverage_guard, documented_blocker, judge, model_request, pending_only, provider_for, purchase_caution, validate, verify_claims, vote_verdict
-from research import ARCHIVE, archive, collect_search, corroborate_records
-from vendor_site import ROBOTS_NOTE, classify_product, collect_site, inspect_privacy_document
+from research import ARCHIVE, archive, collect_search, company_profile_size, corroborate_records
+from vendor_site import LEGAL_COVERAGE_NOTE, ROBOTS_NOTE, classify_product, collect_site, extract, inspect_privacy_document, published_aliases
 
 
 class FixtureHttp:
@@ -135,6 +137,42 @@ class AgentTests(unittest.TestCase):
         self.assertTrue({"firmware", "incidents", "enforcement", "conformity", "distribution", "lifecycle"} <= queries)
         self.assertNotIn("customers", queries)
 
+    @patch.dict("os.environ", {"TAVILY_API_KEY": "stub"}, clear=True)
+    @patch("research.search", return_value=([], ""))
+    def test_reported_aliases_expand_risk_queries_within_normal_budget(self, search):
+        url = "https://example.org/"
+        evidence = [Evidence("ownership claim", "Example, formerly known as OldVendor, was acquired by ParentCo.", url)]
+        aliases = published_aliases(evidence, "Example")
+        self.assertEqual(aliases, ["OldVendor", "ParentCo"])
+        collect_search(FixtureHttp({}), url, "example tool", aliases=aliases)
+        self.assertEqual(search.call_count, 9)
+        queries = {call.args[0]: call.args[2] for call in search.call_args_list}
+        self.assertIn('"OldVendor" OR "ParentCo"', queries["enforcement"])
+        self.assertNotIn("ParentCo", queries["naming"])
+
+    def test_placeholder_links_and_different_user_counts_are_sourced_leads(self):
+        url = "https://example.org/"
+        var = Collection()
+        soup = BeautifulSoup(
+            '<main>Usage: 1,000 users. Marketing reports 800 million users.</main>'
+            '<footer><a href="#" aria-label="LinkedIn"></a><a href="#">Back to top</a></footer>',
+            "html.parser",
+        )
+        extract(var, soup, url, "product")
+        flags = {item.kind: item for item in var.evidence}
+        self.assertEqual(flags["different adoption counts"].source_url, url)
+        self.assertIn("800 million users", flags["different adoption counts"].claim)
+        self.assertIn("linkedin", flags["social link placeholder"].claim)
+        self.assertNotIn("Back to top", flags["social link placeholder"].claim)
+
+    def test_profile_size_requires_a_matching_profile_and_a_small_count(self):
+        source = "https://www.linkedin.com/company/example/"
+        url = "https://example.org/"
+        evidence = lambda text: [Evidence("search excerpt: traction", text, source)]
+        self.assertIsNone(company_profile_size("https://unrelated.org/", evidence("21 employees")))
+        self.assertIsNone(company_profile_size(url, evidence("1,020 employees")))
+        self.assertEqual(company_profile_size(url, evidence("21 employees")).source_url, source)
+
     @patch.dict("os.environ", {}, clear=True)
     def test_non_product_still_returns_sourced_row_and_scope_note(self):
         url = "https://example.org/"
@@ -206,11 +244,13 @@ class AgentTests(unittest.TestCase):
             if "system" in kwargs else verdict
         )
         source = "https://example.org/release"
-        result, mode, _ = judge(source, Collection([Evidence("release", "Version 4.1", source)]), "15")
+        result, mode, _ = judge(source, Collection([Evidence("release", "Version 4.1", source)],
+                                                   notes=[LEGAL_COVERAGE_NOTE]), "15")
         payload = json.loads(request.call_args_list[0].args[1])
         self.assertEqual(mode, "llm")
         self.assertEqual(len(payload["examples"]), 5)
         self.assertNotIn("old-looking open-source", json.dumps(payload["examples"]))
+        self.assertNotIn(LEGAL_COVERAGE_NOTE, payload["coverage_notes"])
         self.assertEqual(result["reasons"][0]["source_url"], source)
 
     @patch("judge.model_request")
@@ -248,6 +288,18 @@ class AgentTests(unittest.TestCase):
         self.assertEqual([row["status"] for row in result["claim_verification"]], ["no", "partial", "unverified"])
         self.assertEqual(result["reasons"][0]["claim"], "Source reports: “Version 4.1”")
         self.assertEqual(result["reasons"][0]["source_date"], "2025-02-01")
+
+    @patch("judge.model_request")
+    def test_linkedin_profile_alone_does_not_validate_adoption(self, request):
+        source = "https://www.linkedin.com/company/example/"
+        claim = "The vendor reports 100 customers."
+        verdict = {"overall": "Green", "confidence": 0.80, "reasons": [
+            {"severity": "Green", "claim": claim, "source_url": source},
+        ]}
+        request.return_value = {"checks": [{"id": 1, "status": "yes", "quote": "100 customers"}]}
+        result = verify_claims(verdict, [Evidence("search excerpt: traction", claim, source)], "test-key", None)
+        self.assertEqual((result["overall"], result["reasons"]), ("Yellow", []))
+        self.assertIn("not independent adoption evidence", result["claim_verification"][0]["discard_reason"])
 
     @patch.dict("os.environ", {"LLM_API_KEY": "test-key"}, clear=True)
     @patch("judge.model_request")

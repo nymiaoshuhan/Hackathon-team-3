@@ -43,6 +43,8 @@ Collectors share a bounded HTTP cache and pace requests by host. Website fetches
 
 If the crawled product overview identifies hardware or a mixed hardware/software offering, the agent uses nine model-specific topics covering firmware/driver releases, lifetime support, advisories, recalls, conformity records, independent retail/distribution, naming, ownership, and region. JSON includes `product_type`; a non-product or unclassifiable page keeps the same output shape and adds a coverage note. CSV columns are unchanged.
 
+The agent also reports incomplete contracting-entity coverage, placeholder social links, and adoption counts that differ substantially on the same page. These are leads to verify, not automatic Red verdicts. Documented former or parent names are added to existing risk queries without increasing the search count. A LinkedIn profile can suggest staffing to check; it does not validate adoption.
+
 ## Evaluate
 
 ```bash
